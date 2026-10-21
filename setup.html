@@ -1,0 +1,53 @@
+<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>차곡 — 설정</title><meta name="robots" content="noindex,nofollow"><meta name="referrer" content="no-referrer"><link rel="icon" href="favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="style.css">
+<style>
+body{background:#f0f5ef;min-height:100vh;display:grid;place-items:center;padding:30px 16px}
+.setup{width:520px;max-width:100%;text-align:left;padding:40px 32px}
+.setup h1{text-align:center}.setup .lock-icon{text-align:center}
+.setup label{display:flex;flex-direction:column;gap:5px;font-size:12px;margin:0 0 14px;color:var(--ink)}
+.setup label span{color:var(--muted);font-size:11px}
+.setup input,.setup textarea{width:100%;padding:11px}
+.setup textarea{font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;height:150px;border:1px solid var(--border);border-radius:7px;resize:vertical}
+.setup .primary{width:100%;padding:12px;font-weight:700;margin-top:6px}
+.setup .tabs{display:flex;gap:8px;margin:22px 0}.setup .tabs button{flex:1}.setup .tabs button.active{background:var(--light);color:var(--green);font-weight:700;border-color:#cfe0d3}
+.setup .msg{font-size:12px;margin:12px 0;min-height:1em}.setup .msg.error{color:#c66d59}.setup .msg.ok{color:var(--green)}
+.setup ol{padding-left:18px;font-size:12px;color:var(--ink)}.setup ol li{margin:4px 0}
+.setup .back{display:block;text-align:center;margin-top:20px;font-size:12px;color:var(--muted)}
+</style></head><body>
+<div class="lock-card setup">
+  <div class="lock-icon">⚙️</div><h1>차곡 설정</h1>
+  <p class="muted" style="text-align:center">여기서 입력한 값은 이 브라우저 안에서만 쓰이고 어디로도 보내지지 않아요(GitHub 확인 요청 제외).</p>
+  <div class="tabs"><button type="button" id="tabNew">처음 설정</button><button type="button" id="tabChange">토큰·긴 비밀번호 변경</button></div>
+
+  <form id="newForm" hidden>
+    <label>GitHub 아이디<input id="owner" autocomplete="off" required placeholder="예: ekdus0111"></label>
+    <label>기록 저장소 이름 <span>비공개(Private)로 만든 저장소</span><input id="repo" autocomplete="off" required value="chagog-data"></label>
+    <label>GitHub 토큰 <span>기록 저장소 하나에만 Contents 읽기/쓰기 권한을 준 토큰</span><input id="token" type="password" autocomplete="off" required placeholder="github_pat_…"></label>
+    <label>긴 비밀번호 <span>10자 이상. 새 기기를 처음 등록할 때만 써요(평소엔 PIN 4자리). 잊으면 기록을 열 수 없어요.</span><input id="pw1" type="password" autocomplete="new-password" required minlength="10"></label>
+    <label>긴 비밀번호 확인<input id="pw2" type="password" autocomplete="new-password" required minlength="10"></label>
+    <button class="primary" type="submit">확인하고 설정 만들기</button>
+  </form>
+
+  <form id="changeForm" hidden>
+    <label>현재 긴 비밀번호<input id="curPw" type="password" autocomplete="current-password" required></label>
+    <label>새 GitHub 토큰 <span>바꾸지 않으려면 비워 두세요</span><input id="newToken" type="password" autocomplete="off" placeholder="github_pat_…"></label>
+    <label>새 긴 비밀번호 <span>바꾸지 않으려면 비워 두세요 (10자 이상)</span><input id="newPw1" type="password" autocomplete="new-password"></label>
+    <label>새 긴 비밀번호 확인<input id="newPw2" type="password" autocomplete="new-password"></label>
+    <button class="primary" type="submit">확인하고 새 설정 만들기</button>
+  </form>
+
+  <p id="msg" class="msg" role="alert"></p>
+
+  <div id="result" hidden>
+    <ol>
+      <li>아래 내용을 <b>복사</b>합니다.</li>
+      <li>GitHub의 <b>사이트 저장소</b>에서 <code>config.js</code> → 연필(✏️) 버튼을 누릅니다.</li>
+      <li>원래 내용을 <b>전부 지우고</b> 붙여넣은 뒤 <b>Commit changes</b>를 누릅니다.</li>
+      <li>1~2분 뒤 가계부 주소를 열고, 긴 비밀번호로 기기를 등록하면서 PIN 4자리를 정합니다.</li>
+    </ol>
+    <textarea id="output" readonly></textarea>
+    <button class="primary" type="button" id="copy">복사하기</button>
+  </div>
+  <a class="back" href="./">← 가계부로 돌아가기</a>
+</div>
+<script src="config.js"></script><script src="vault.js"></script><script src="setup.js"></script>
+</body></html>
