@@ -51,6 +51,15 @@
     return { list: from ? data.budgets[from] : [], own: false, from };
   }
 
+  /** 분류별 입금 금액: 그 달 값이 없으면 가장 가까운 이전 달 값을 그대로 적용 */
+  function depositsFor(data, key) {
+    const all = data.categoryBudgets || {};
+    if (all[key] && typeof all[key] === 'object') return { map: all[key], own: true, from: key };
+    let from = null;
+    for (const k of Object.keys(all)) if (k < key && all[k] && typeof all[k] === 'object' && (!from || k > from)) from = k;
+    return { map: from ? all[from] : {}, own: false, from };
+  }
+
   function stats(data, key, day, nowKey) {
     const inPeriod = rows => rows.filter(t => period(t.date, day) === key);
     const tx = inPeriod(data.transactions), fixed = fixedFor(data, key, day, nowKey), income = inPeriod(data.income);
@@ -69,6 +78,6 @@
     return { used, carry, remaining: amount - used - carry };
   }
 
-  const api = { net, period, sum, special, stats, budgetStats, fixedFor, fixedSource, budgetsFor, shiftDate };
+  const api = { version: '2026.10.22-2', net, period, sum, special, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor, shiftDate };
   if (typeof module !== 'undefined') module.exports = api; else root.Ledger = api;
 })(typeof window !== 'undefined' ? window : globalThis);

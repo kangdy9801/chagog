@@ -1,3 +1,4 @@
+const APP_VERSION = '2026.10.22-2';   // core.js · importer.js 와 같은 값이어야 함
 const $ = id => document.getElementById(id);
 const { net, period, sum, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor } = Ledger;
 const blank = () => ({ version: 1, transactions: [], fixed: [], income: [], budgets: {}, categoryBudgets: {}, fixedMonths: {}, cycleDay: 21 });
@@ -311,13 +312,23 @@ function render() {
   $('subtitle').textContent = tab === 'dashboard' ? '기록은 간단하게, 돈의 흐름은 한눈에.' : range(key()) + ' · 입력 즉시 모든 현황에 반영됩니다.';
   $('nav').innerHTML = navs.map(([id, icon, label]) => `<button data-tab="${id}" class="${id === tab ? 'active' : ''}">${icon}　${label}</button>`).join('');
   $('add').textContent = tab === 'cards' ? '＋ 계좌 예산' : tab === 'fixed' ? '＋ 고정지출' : tab === 'income' ? '＋ 수입 기록' : '＋ 지출 기록';
-  const s = monthStats(key());
   let html = '';
+  // GitHub에 일부 파일만 올라가 예전 파일과 섞이면 화면이 깨질 수 있어 먼저 확인
+  const stale = [['core.js', Ledger.version], ['importer.js', window.ChagogImport?.version]].filter(([, v]) => v !== APP_VERSION).map(([f]) => f);
+  if (stale.length) html += `<div class="notice error-notice"><b>${stale.join(', ')}</b> 파일이 예전 버전이에요. 바뀐 파일을 GitHub에 함께 올린 뒤 Ctrl+Shift+R로 새로고침해 주세요.</div>`;
+  if ($('appVersion')) $('appVersion').textContent = `버전 ${APP_VERSION}`;
+  try {
+  const s = monthStats(key());
   if (!data.transactions.length && !data.fixed.length && !data.income.length) html += `<div class="notice"><b>나의 가계부를 시작해 보세요.</b> ‘데이터 불러오기’에서 백업 JSON 파일을 선택하면 기존 기록이 연결됩니다. <button data-action="import">불러오기</button></div>`;
   if (tab === 'dashboard') html += renderDashboard(s);
   else if (['transactions', 'fixed', 'income'].includes(tab)) html += renderList(s, nav);
   else if (tab === 'cards') html += renderCards(s);
   else html += renderDetails(s);
+  } catch (error) {
+    // 화면을 그리다 문제가 생기면 이전 탭 내용이 남지 않도록 안내를 대신 보여 줌
+    console.error(error);
+    html += `<div class="notice error-notice">이 화면을 그리는 중 문제가 생겼어요. 바뀐 파일이 모두 GitHub에 올라갔는지 확인하고 Ctrl+Shift+R로 새로고침해 주세요. 계속되면 이 문구를 캡처해서 알려 주세요.<br><span class="muted">${esc(error?.message || error)}</span></div>`;
+  }
   $('content').innerHTML = html;
 }
 
