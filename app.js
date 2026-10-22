@@ -34,6 +34,14 @@ function aggregate() {
   const list = yearKeys().map(monthStats);
   return { tx: list.flatMap(x => x.tx), fixed: list.flatMap(x => x.fixed), income: list.flatMap(x => x.income), ...Object.fromEntries(['variable', 'fixedTotal', 'incomeTotal', 'savings', 'chartVariable'].map(k => [k, list.reduce((a, x) => a + x[k], 0)])) };
 }
+// 고정지출을 모임 / 적금 / 주식 / 그 외로 나눔
+const FIXED_PARTS = ['모임', '적금', '주식'];
+function fixedParts(rows) {
+  const out = Object.fromEntries([...FIXED_PARTS, '그 외'].map(k => [k, 0]));
+  rows.forEach(t => { out[FIXED_PARTS.includes(t.category) ? t.category : '그 외'] += net(t); });
+  return out;
+}
+const fixedPartsText = p => FIXED_PARTS.map(k => `${k} ${won(p[k])}`).join(' · ') + (p['그 외'] ? ` · 그 외 ${won(p['그 외'])}` : '');
 function groups(rows) { const out = {}; rows.forEach(t => { const c = t.category || 'NA'; out[c] = (out[c] || 0) + net(t); }); return Object.entries(out).sort((a, b) => b[1] - a[1]); }
 
 // 그래프: 변동지출만 (고정지출 전체 제외, 적금 분류 제외)
@@ -48,22 +56,26 @@ function annualChart() {
   return `<div class="legend"><span><i class="dot" style="background:#38785d"></i>변동지출 · 고정지출 제외</span></div><div class="chart">${months.map((s, i) => `<div class="bar-col"><div class="bars"><div class="bar" title="${i + 1}월 변동지출 ${won(s.chartVariable)}" style="height:${s.chartVariable / max * 150}px;background:#38785d"></div></div><span>${i + 1}월</span></div>`).join('')}</div>`;
 }
 function annualTable() {
-  return table(['월 / 시작 월 기준', '수입', '변동지출', '고정지출 (적금 포함)', '적금', '월 잔액'], yearKeys().map((k, i) => {
-    const s = monthStats(k), left = s.incomeTotal - s.variable - s.fixedTotal;
-    return `<tr><td>${i + 1}월</td><td>${won(s.incomeTotal)}</td><td>${won(s.variable)}</td><td>${won(s.fixedTotal)}</td><td>${won(s.savings)}</td><td class="${left < 0 ? 'negative' : ''}">${won(left)}</td></tr>`;
+  const months = yearKeys().map(k => { const st = monthStats(k); return { st, p: fixedParts(st.fixed) }; });
+  const other = months.some(m => m.p['그 외']);
+  const head = ['월 / 시작 월 기준', '수입', '변동지출', ...FIXED_PARTS, ...(other ? ['고정 · 그 외'] : []), '고정지출 합계', '월 잔액'];
+  return table(head, months.map(({ st: s, p }, i) => {
+    const left = s.incomeTotal - s.variable - s.fixedTotal;
+    return `<tr><td>${i + 1}월</td><td>${won(s.incomeTotal)}</td><td>${won(s.variable)}</td>${FIXED_PARTS.map(k => `<td>${won(p[k])}</td>`).join('')}${other ? `<td>${won(p['그 외'])}</td>` : ''}<td>${won(s.fixedTotal)}</td><td class="${left < 0 ? 'negative' : ''}">${won(left)}</td></tr>`;
   }).join(''));
 }
 
 function renderDashboard(s) {
   const a = mode === 'year' ? aggregate() : s;
   let html = `<div class="panel-head"><div><h2>${mode === 'year' ? key().slice(0, 4) + '년 한눈에 보기' : Number(key().slice(5)) + '월의 흐름'}</h2><p>${mode === 'year' ? '1월~12월 · 선택한 집계 기준 적용' : range(key())}</p></div><div><button data-mode="month" class="${mode === 'month' ? 'primary' : ''}">월간</button> <button data-mode="year" class="${mode === 'year' ? 'primary' : ''}">연간</button></div></div>`;
-  html += `<div class="cards">${metric('총 수입', a.incomeTotal, '수입 내역 자동 합산')}${metric('변동지출', a.variable, '결제 금액 − 할인 및 엔빵')}${metric('고정지출', a.fixedTotal, `적금 ${won(a.savings)} 포함`)}${metric('남은 금액', a.incomeTotal - a.variable - a.fixedTotal, '수입 − 변동지출 − 고정지출', true)}</div>`;
+  html += `<div class="cards">${metric('총 수입', a.incomeTotal, '수입 내역 자동 합산')}${metric('변동지출', a.variable, '결제 금액 − 할인 및 엔빵')}${metric('고정지출', a.fixedTotal, fixedPartsText(fixedParts(a.fixed)))}${metric('남은 금액', a.incomeTotal - a.variable - a.fixedTotal, '수입 − 변동지출 − 고정지출', true)}</div>`;
   html += `<div class="grid">${panel('월별 지출 흐름', annualChart(), key().slice(0, 4) + '년 · 변동지출 기준 (고정지출·적금 제외)')}${panel('지출 비중', donut(a.tx), '변동지출 기준 · 고정지출 제외')}</div>`;
   if (mode === 'year') html += panel('월간 현황표', annualTable(), '월은 집계 기간의 시작 월로 표시합니다.');
   else html += panel('월간 현황표', table(['항목', '금액', '집계 기준'], [
     ['이번 달 일반 사용', sum(s.tx.filter(t => !Ledger.special(t))), '이월·기타 제외'],
     ['이월·기타', sum(s.tx.filter(Ledger.special)), '분류가 이월 또는 기타인 거래'],
-    ['고정지출', s.fixedTotal, '매월 자동 적용 · 그래프 제외'],
+    ...(() => { const p = fixedParts(s.fixed); return [...FIXED_PARTS.map(k => [`고정지출 · ${k}`, p[k], `분류가 ${k}인 고정지출`]), ...(p['그 외'] ? [['고정지출 · 그 외', p['그 외'], '모임·적금·주식 외 고정지출']] : [])]; })(),
+    ['고정지출 합계', s.fixedTotal, '매월 자동 적용 · 그래프 제외'],
   ].map(r => `<tr><td>${r[0]}</td><td>${won(r[1])}</td><td>${r[2]}</td></tr>`).join('')), range(key()));
   return html;
 }
@@ -87,9 +99,14 @@ function renderList(s, nav) {
     else if (src.own) html += `<div class="notice">이 달 고정지출은 다음 달에도 그대로 이어서 적용돼요. 금액이 바뀌는 달에만 그 달에서 수정하면 돼요.</div>`;
   }
 
-  let cards = metric('선택 월 합계', sum(all), range(key()), true) + metric('현재 조회 합계', sum(rows), rows.length + '건');
-  if (tab === 'transactions') cards += metric('할인 및 엔빵', sum(rows, t => +t.discount || 0), '실지출에서 자동 차감');
-  if (tab === 'fixed') cards += metric('적금', sum(rows.filter(t => t.category === '적금')), '고정지출은 그래프에서 제외');
+  let cards = metric('선택 월 합계', sum(all), range(key()), true);
+  if (tab === 'fixed') {
+    const p = fixedParts(all);
+    cards += FIXED_PARTS.map(k => metric(k, p[k], k === '주식' && p['그 외'] ? `그 외 고정지출 ${won(p['그 외'])}` : '고정지출 · 그래프 제외')).join('');
+  } else {
+    cards += metric('현재 조회 합계', sum(rows), rows.length + '건');
+    if (tab === 'transactions') cards += metric('할인 및 엔빵', sum(rows, t => +t.discount || 0), '실지출에서 자동 차감');
+  }
   html += `<div class="cards">${cards}</div>`;
 
   const filterOptions = `<option value="">전체 분류</option>${tab === 'transactions' ? `<option value="${NA_FILTER}" ${filter === NA_FILTER ? 'selected' : ''}>NA(미입력) 있는 기록만</option>` : ''}${cats.map(c => `<option value="${esc(c)}" ${filter === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}`;
@@ -108,7 +125,7 @@ function renderList(s, nav) {
       + `<td><button data-edit="${esc(t.id)}">수정</button><button data-delete="${esc(t.id)}">삭제</button></td></tr>`;
   }).join('');
   html += panel(nav[2] + ' 내역', `<div class="filters"><input id="search" placeholder="내역, 카드, 비고 검색" value="${esc(search)}" aria-label="내역 검색"><select id="filter" aria-label="분류 필터">${filterOptions}</select></div>` + table(head, body),
-    tab === 'fixed' ? '↻ 표시는 지난달에서 자동 적용된 항목이에요.' : '* 원본 날짜가 없는 항목은 해당 시트 시작일로 배정했습니다.');
+    tab === 'fixed' ? `현재 조회 ${rows.length}건 · ${won(sum(rows))} · ↻ 표시는 지난달에서 자동 적용된 항목이에요.` : '* 원본 날짜가 없는 항목은 해당 시트 시작일로 배정했습니다.');
   return html;
 }
 
