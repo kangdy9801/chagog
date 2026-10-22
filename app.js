@@ -171,10 +171,66 @@ function renderCards(s) {
   return html;
 }
 
+// ---------- 세부지출내역: 월간·연간 비교 ----------
+// 비교는 변동지출 기준(적금 분류 제외 · 고정지출 제외), 그래프와 같은 기준
+let compareBase = 'avg12';
+const addMonths = (k, n) => { const [y, m] = k.split('-').map(Number), d = new Date(y, m - 1 + n, 1); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`; };
+function monthCats(k) {
+  const rows = monthStats(k).tx.filter(t => t.category !== '적금'), cats = {};
+  rows.forEach(t => { const c = t.category || 'NA'; cats[c] = (cats[c] || 0) + net(t); });
+  return { key: k, total: sum(rows), cats, has: rows.length > 0 };
+}
+const BASES = {
+  prev: ['지난달', k => [addMonths(k, -1)]],
+  avg3: ['최근 3개월 평균', k => [1, 2, 3].map(i => addMonths(k, -i))],
+  avg12: ['최근 12개월 평균', k => Array.from({ length: 12 }, (_, i) => addMonths(k, -i - 1))],
+  lastyear: ['작년 같은 달', k => [addMonths(k, -12)]],
+};
+/** 비교 기준: 평균은 기록이 있는 달만으로 계산(가계부 시작 전 빈 달은 제외) */
+function baseline(name, k) {
+  const months = BASES[name][1](k).map(monthCats).filter(m => m.has), n = months.length, cats = {};
+  months.forEach(m => Object.entries(m.cats).forEach(([c, v]) => { cats[c] = (cats[c] || 0) + v / n; }));
+  return { label: BASES[name][0], n, total: n ? months.reduce((a, m) => a + m.total, 0) / n : null, cats };
+}
+function diffText(now, base) {
+  if (base == null) return '<span class="muted">비교할 기록 없음</span>';
+  const d = now - base, pct = base ? Math.round(d / base * 100) : null;
+  if (Math.round(d) === 0) return '차이 없음';
+  return `<span class="${d > 0 ? 'up' : 'down'}">${d > 0 ? '▲' : '▼'} ${won(Math.abs(d))}${pct == null ? '' : ` (${Math.abs(pct)}%)`}</span> ${d > 0 ? '더 씀' : '덜 씀'}`;
+}
+function compareCards(cur) {
+  const b = Object.keys(BASES).filter(x => x !== 'avg3').map(x => [x, baseline(x, key())]);
+  return `<div class="cards">${metric(`${Number(key().slice(5))}월 변동지출`, cur.total, '적금·고정지출 제외', true)}${b.map(([, v]) =>
+    metric(v.label, v.total ?? 0, `이번 달은 ${diffText(cur.total, v.total)}${v.n > 1 ? ` · ${v.n}개월 기준` : ''}`)).join('')}</div>`;
+}
+function trendChart(cur) {
+  const months = Array.from({ length: 12 }, (_, i) => monthCats(addMonths(key(), i - 11)));
+  const avg = baseline('avg12', key()).total;   // 위 카드의 '최근 12개월 평균'과 같은 값
+  const max = Math.max(1, avg || 0, ...months.map(m => m.total));
+  return `<div class="legend"><span><i class="dot" style="background:#38785d"></i>이번 달</span><span><i class="dot" style="background:#a8c78b"></i>이전 달</span>${avg != null ? `<span><i class="avg-key"></i>최근 12개월 평균 ${won(avg)}</span>` : ''}</div>`
+    + `<div class="chart">${months.map((m, i) => `<div class="bar-col"><div class="bars">${avg != null ? `<i class="avg-mark" style="bottom:${avg / max * 150}px"></i>` : ''}<div class="bar" title="${m.key.replace('-', '년 ')}월 ${won(m.total)}" style="height:${m.total / max * 150}px;background:${i === 11 ? '#38785d' : '#a8c78b'}"></div></div><span>${Number(m.key.slice(5))}월</span></div>`).join('')}</div>`;
+}
+function categoryCompare(cur) {
+  const b = baseline(compareBase, key());
+  const select = `<select id="compareBase" aria-label="비교 기준">${Object.entries(BASES).map(([k, [label]]) => `<option value="${k}" ${compareBase === k ? 'selected' : ''}>${label}과 비교</option>`).join('')}</select>`;
+  const cats = [...new Set([...Object.keys(cur.cats), ...Object.keys(b.cats)])].sort((x, y) => (cur.cats[y] || 0) - (cur.cats[x] || 0) || (b.cats[y] || 0) - (b.cats[x] || 0));
+  const max = Math.max(1, ...cats.flatMap(c => [cur.cats[c] || 0, b.cats[c] || 0]));
+  const rows = b.n ? cats.map(c => {
+    const now = cur.cats[c] || 0, base = b.cats[c] || 0;
+    return `<tr><td>${c === 'NA' ? NA : `<span class="tag">${esc(c)}</span>`}</td><td><b>${won(now)}</b></td><td>${won(base)}</td><td>${diffText(now, base)}</td>`
+      + `<td class="compare-bars"><div class="cbar now" style="width:${now / max * 100}%"></div><div class="cbar base" style="width:${base / max * 100}%"></div></td></tr>`;
+  }).join('') + `<tr class="totals"><td>합계</td><td>${won(cur.total)}</td><td>${won(b.total)}</td><td>${diffText(cur.total, b.total)}</td><td></td></tr>` : '';
+  const body = b.n ? table(['분류', '이번 달', b.label, '차이', '<span class="cbar-key now"></span>이번 달 <span class="cbar-key base"></span>비교'], rows)
+    : `<p class="empty">${b.label}에 해당하는 이전 기록이 아직 없어요. 다른 비교 기준을 골라 보세요.</p>`;
+  return panel('분류별 비교', body, `이번 달과 ${b.label}${b.n > 1 ? `(${b.n}개월)` : ''}을 분류별로 비교 · 평균은 기록이 있는 달만 계산`, select);
+}
+
 function renderDetails(s) {
-  const pairs = {};
+  const pairs = {}, cur = monthCats(key());
   s.tx.forEach(t => { const k = JSON.stringify([t.category || 'NA', t.detail || 'NA']); pairs[k] = (pairs[k] || 0) + net(t); });
-  let html = panel('분류별 지출 비중', donut(s.tx), '변동지출 기준 · 적금 제외');
+  let html = compareCards(cur);
+  html += `<div class="grid">${panel('월별 추이', trendChart(cur), '최근 12개월 변동지출 · 점선은 지난 12개월 평균')}${panel('분류별 지출 비중', donut(s.tx), '변동지출 기준 · 적금 제외')}</div>`;
+  html += categoryCompare(cur);
   html += panel('세부지출내역', table(['사용 내역', '세부 사용 내역', '실지출', '변동지출 내 비중'], Object.entries(pairs).sort((a, b) => b[1] - a[1]).map(([k, n]) => {
     const [c, d] = JSON.parse(k);
     return `<tr><td>${c === 'NA' ? NA : `<span class="tag">${esc(c)}</span>`}</td><td>${d === 'NA' ? NA : esc(d)}</td><td>${won(n)}</td><td>${s.variable ? (n / s.variable * 100).toFixed(1) : 0}%</td></tr>`;
@@ -306,6 +362,7 @@ $('content').onclick = e => {
 $('content').oninput = e => { if (e.target.id === 'search') { const pos = e.target.selectionStart; search = e.target.value; render(); $('search').focus(); $('search').setSelectionRange(pos, pos); } };
 $('content').onchange = e => {
   if (e.target.id === 'filter') { filter = e.target.value; render(); }
+  if (e.target.id === 'compareBase') { compareBase = e.target.value; render(); }
   const field = e.target.dataset.extra;
   if (field) { extra[field] = e.target.value; render(); $('content').querySelector(`[data-extra="${field}"]`)?.focus(); }
 };
