@@ -1,4 +1,4 @@
-const APP_VERSION = '2026.10.22-2';   // core.js · importer.js 와 같은 값이어야 함
+const APP_VERSION = '2026.10.22-3';   // core.js · importer.js 와 같은 값이어야 함
 const $ = id => document.getElementById(id);
 const { net, period, sum, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor } = Ledger;
 const blank = () => ({ version: 1, transactions: [], fixed: [], income: [], budgets: {}, categoryBudgets: {}, fixedMonths: {}, cycleDay: 21 });
@@ -56,15 +56,32 @@ const fixedPartsText = p => FIXED_PARTS.map(k => `${k} ${won(p[k])}`).join(' · 
 function groups(rows) { const out = {}; rows.forEach(t => { const c = t.category || 'NA'; out[c] = (out[c] || 0) + net(t); }); return Object.entries(out).sort((a, b) => b[1] - a[1]); }
 
 // 그래프: 변동지출만 (고정지출 전체 제외, 적금 분류 제외)
+// 분류별 색: 전체 기록에서 많이 쓴 순서대로 고정 → 어느 달·어느 그래프에서도 같은 분류는 같은 색
+const palette = [...colors, '#5f8f9e', '#c99b7c', '#9fb8a0', '#b3a46f', '#a07f9e', '#6f8b6b'];
+let colorOrder = null;
+function categoryColor(c) {
+  if (!colorOrder) colorOrder = groups(data.transactions.filter(t => t.category !== '적금')).map(([k]) => k);
+  let i = colorOrder.indexOf(c);
+  if (i < 0) { colorOrder.push(c); i = colorOrder.length - 1; }
+  return palette[i % palette.length];
+}
 function donut(rows) {
   const g = groups(rows.filter(t => t.category !== '적금')).filter(x => x[1] > 0), total = g.reduce((a, x) => a + x[1], 0);
   let at = 0;
-  const gradient = g.map(([, n], i) => { const start = at; at += n / total * 100; return `${colors[i % colors.length]} ${start}% ${at}%`; }).join(',');
-  return `<div class="donut-wrap"><div class="donut" style="background:${total ? `conic-gradient(${gradient})` : '#edf1ea'}"><div><span>변동지출</span><strong>${money(total)}</strong><span>원</span></div></div><div class="donut-key">${g.map(([k, n], i) => `<div class="key-row"><span><i class="dot" style="background:${colors[i % colors.length]}"></i>${esc(k)}</span><b>${(n / total * 100).toFixed(1)}%</b></div>`).join('') || '<p>기록을 추가하면<br>지출 비중이 표시돼요.</p>'}</div></div>`;
+  const gradient = g.map(([, n], i) => { const start = at; at += n / total * 100; return `${categoryColor(g[i][0])} ${start}% ${at}%`; }).join(',');
+  return `<div class="donut-wrap"><div class="donut" style="background:${total ? `conic-gradient(${gradient})` : '#edf1ea'}"><div><span>변동지출</span><strong>${money(total)}</strong><span>원</span></div></div><div class="donut-key">${g.map(([k, n], i) => `<div class="key-row"><span><i class="dot" style="background:${categoryColor(k)}"></i>${esc(k)}</span><b>${(n / total * 100).toFixed(1)}%</b></div>`).join('') || '<p>기록을 추가하면<br>지출 비중이 표시돼요.</p>'}</div></div>`;
 }
 function annualChart() {
-  const months = yearKeys().map(monthStats), max = Math.max(1, ...months.map(s => s.chartVariable));
-  return `<div class="legend"><span><i class="dot" style="background:#38785d"></i>변동지출 · 고정지출 제외</span></div><div class="chart">${months.map((s, i) => `<div class="bar-col"><div class="bars"><div class="bar" title="${i + 1}월 변동지출 ${won(s.chartVariable)}" style="height:${s.chartVariable / max * 150}px;background:#38785d"></div></div><span>${i + 1}월</span></div>`).join('')}</div>`;
+  // 월별 막대를 분류별 색으로 쌓아서 표시 (지출 비중과 같은 색)
+  const months = yearKeys().map(k => groups(monthStats(k).tx.filter(t => t.category !== '적금')).filter(x => x[1] > 0));
+  const totals = months.map(g => g.reduce((a, x) => a + x[1], 0)), max = Math.max(1, ...totals);
+  const order = c => { categoryColor(c); return colorOrder.indexOf(c); };
+  const present = [...new Set(months.flatMap(g => g.map(x => x[0])))].sort((a, b) => order(a) - order(b));
+  const legend = present.length ? present.map(c => `<span><i class="dot" style="background:${categoryColor(c)}"></i>${esc(c)}</span>`).join('') : '<span>변동지출 · 고정지출 제외</span>';
+  return `<div class="legend wrap">${legend}</div><div class="chart">${months.map((g, i) => {
+    const segs = [...g].sort((a, b) => order(a[0]) - order(b[0]));
+    return `<div class="bar-col"><div class="bars"><div class="bar stack" title="${i + 1}월 변동지출 ${won(totals[i])}" style="height:${totals[i] / max * 150}px">${segs.map(([c, n]) => `<i title="${i + 1}월 ${esc(c)} ${won(n)}" style="height:${n / totals[i] * 100}%;background:${categoryColor(c)}"></i>`).join('')}</div></div><span>${i + 1}월</span></div>`;
+  }).join('')}</div>`;
 }
 function annualTable() {
   const months = yearKeys().map(k => { const st = monthStats(k); return { st, p: fixedParts(st.fixed) }; });
@@ -297,16 +314,25 @@ function detailTable(s) {
     `지출 금액은 변동지출 기록에서 자동 합산 · 분류 합계는 계좌 구분 ‘기타’(출장비 등 수입으로 충당) 제외 · 입금 금액은 직접 입력(다음 달에도 이어서 적용)${note}`, `<button data-action="deposit">입금 금액 편집</button>`);
 }
 
+let donutMonth = '';   // 세부지출내역의 분류별 지출 비중: '' = 보고 있는 달, 'YYYY-MM' = 다른 달, 'year' = 최근 12개월 합계
+function donutPanel(s) {
+  const months = Array.from({ length: 12 }, (_, i) => addMonths(key(), -i));
+  const chosen = donutMonth === 'year' || months.includes(donutMonth) ? donutMonth : key();
+  const rows = chosen === 'year' ? months.flatMap(k => monthStats(k).tx) : chosen === key() ? s.tx : monthStats(chosen).tx;
+  const select = `<select id="donutMonth" aria-label="지출 비중 볼 달">${months.map(k => `<option value="${k}" ${chosen === k ? 'selected' : ''}>${monthLabel(k)}${k === key() ? ' (이번 달)' : ''}</option>`).join('')}<option value="year" ${chosen === 'year' ? 'selected' : ''}>최근 12개월 합계</option></select>`;
+  return panel('분류별 지출 비중', donut(rows), `${chosen === 'year' ? '최근 12개월 합계' : monthLabel(chosen)} · 변동지출 기준 · 적금 제외`, select);
+}
 function renderDetails(s) {
   const cur = monthCats(key());
   let html = detailTable(s);
   html += compareCards(cur);
-  html += `<div class="grid">${panel('월별 추이', trendChart(cur), '최근 12개월 변동지출 · 점선은 지난 12개월 평균')}${panel('분류별 지출 비중', donut(s.tx), '변동지출 기준 · 적금 제외')}</div>`;
+  html += `<div class="grid">${panel('월별 추이', trendChart(cur), '최근 12개월 변동지출 · 점선은 지난 12개월 평균')}${donutPanel(s)}</div>`;
   html += categoryCompare(cur);
   return html;
 }
 
 function render() {
+  colorOrder = null;
   const nav = navs.find(n => n[0] === tab);
   $('title').textContent = nav[2];
   $('subtitle').textContent = tab === 'dashboard' ? '기록은 간단하게, 돈의 흐름은 한눈에.' : range(key()) + ' · 입력 즉시 모든 현황에 반영됩니다.';
@@ -468,15 +494,17 @@ $('content').oninput = e => { if (e.target.id === 'search') { const pos = e.targ
 $('content').onchange = e => {
   if (e.target.id === 'filter') { filter = e.target.value; render(); }
   if (e.target.id === 'compareBase') { compareBase = e.target.value; render(); }
+  if (e.target.id === 'donutMonth') { donutMonth = e.target.value === key() ? '' : e.target.value; render(); }
   const field = e.target.dataset.extra;
   if (field) { extra[field] = e.target.value; render(); $('content').querySelector(`[data-extra="${field}"]`)?.focus(); }
 };
-$('month').onchange = () => { if (!/^\d{4}-\d{2}$/.test(key())) $('month').value = nowKey(); extra.from = extra.to = ''; render(); };
+$('month').onchange = () => { if (!/^\d{4}-\d{2}$/.test(key())) $('month').value = nowKey(); extra.from = extra.to = ''; donutMonth = ''; render(); };
 $('basis').onchange = () => { data.cycleDay = day(); save(); render(); };
 for (const [id, offset] of [['prev', -1], ['next', 1]]) $(id).onclick = () => {
   const [y, m] = key().split('-').map(Number), d = new Date(y, m - 1 + offset, 1);
   $('month').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
   extra.from = extra.to = '';
+  donutMonth = '';
   render();
 };
 $('backup').onclick = () => {
