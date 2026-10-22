@@ -2,6 +2,13 @@ const $ = id => document.getElementById(id);
 const { net, period, sum, stats, budgetStats, fixedFor, fixedSource, budgetsFor } = Ledger;
 const blank = () => ({ version: 1, transactions: [], fixed: [], income: [], budgets: {}, categoryBudgets: {}, fixedMonths: {}, cycleDay: 21 });
 let data = blank(), tab = 'dashboard', mode = 'month', search = '', filter = '', editing = null;
+// 변동지출 내역 추가 필터 (카드 · 계좌 · 날짜 범위 · 금액 범위 · 정렬)
+const noExtra = () => ({ card: '', account: '', from: '', to: '', min: '', max: '', sort: 'date-desc' });
+let extra = noExtra();
+const EMPTY = '__EMPTY__';
+const SORTS = { 'date-desc': ['최신순', (a, b) => b.date.localeCompare(a.date)], 'date-asc': ['오래된순', (a, b) => a.date.localeCompare(b.date)],
+  'amount-desc': ['실지출 큰 순', (a, b) => net(b) - net(a)], 'amount-asc': ['실지출 작은 순', (a, b) => net(a) - net(b)] };
+const extraActive = () => Object.entries(extra).some(([k, v]) => v !== noExtra()[k]);
 const NA_FILTER = '__NA__';
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -84,7 +91,12 @@ function renderList(s, nav) {
   const listKey = tab === 'transactions' ? 'tx' : tab, all = s[listKey];
   const matches = t => (!filter || (filter === NA_FILTER ? incomplete(t) : (t.category || 'NA') === filter)) &&
     (!search || [t.category, t.detail, t.card, t.account, t.note, t.date].join(' ').toLowerCase().includes(search.toLowerCase()));
-  const rows = all.filter(matches).sort((a, b) => b.date.localeCompare(a.date));
+  const isTx = tab === 'transactions';
+  const pick = (value, chosen) => !chosen || (chosen === EMPTY ? !value : value === chosen);
+  const matchesExtra = t => !isTx || (pick(t.card, extra.card) && pick(t.account, extra.account)
+    && (!extra.from || t.date >= extra.from) && (!extra.to || t.date <= extra.to)
+    && (extra.min === '' || (t.amount != null && net(t) >= +extra.min)) && (extra.max === '' || (t.amount != null && net(t) <= +extra.max)));
+  const rows = all.filter(t => matches(t) && matchesExtra(t)).sort(isTx ? SORTS[extra.sort][1] : SORTS['date-desc'][1]);
   const cats = [...new Set(data[tab].map(t => t.category || 'NA'))];
   let html = '';
 
@@ -124,7 +136,20 @@ function renderList(s, nav) {
       + `<td>${cell(t.note, '—')}</td>`
       + `<td><button data-edit="${esc(t.id)}">수정</button><button data-delete="${esc(t.id)}">삭제</button></td></tr>`;
   }).join('');
-  html += panel(nav[2] + ' 내역', `<div class="filters"><input id="search" placeholder="내역, 카드, 비고 검색" value="${esc(search)}" aria-label="내역 검색"><select id="filter" aria-label="분류 필터">${filterOptions}</select></div>` + table(head, body),
+  let filterBar = `<div class="filters"><input id="search" placeholder="내역, 카드, 비고 검색" value="${esc(search)}" aria-label="내역 검색"><select id="filter" aria-label="분류 필터">${filterOptions}</select></div>`;
+  if (isTx) {
+    const choices = (field, label) => {
+      const values = [...new Set(all.map(t => t[field]).filter(Boolean))].sort((a, b) => a.localeCompare(b, 'ko'));
+      return `<select data-extra="${field}" aria-label="${label} 필터"><option value="">전체 ${label}</option>${values.map(v => `<option value="${esc(v)}" ${extra[field] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}${all.some(t => !t[field]) ? `<option value="${EMPTY}" ${extra[field] === EMPTY ? 'selected' : ''}>${label} NA</option>` : ''}</select>`;
+    };
+    const [start, end] = range(key()).split(' – ').map(x => x.replaceAll('.', '-'));
+    filterBar += `<div class="filters extra-filters">${choices('card', '카드')}${choices('account', '계좌')}`
+      + `<label>날짜<input type="date" data-extra="from" value="${esc(extra.from)}" min="${start}" max="${end}" aria-label="시작 날짜"><span>~</span><input type="date" data-extra="to" value="${esc(extra.to)}" min="${start}" max="${end}" aria-label="끝 날짜"></label>`
+      + `<label>실지출<input type="number" min="0" step="1000" data-extra="min" value="${esc(extra.min)}" placeholder="최소" aria-label="최소 실지출"><span>~</span><input type="number" min="0" step="1000" data-extra="max" value="${esc(extra.max)}" placeholder="최대" aria-label="최대 실지출"></label>`
+      + `<select data-extra="sort" aria-label="정렬">${Object.entries(SORTS).map(([k, [label]]) => `<option value="${k}" ${extra.sort === k ? 'selected' : ''}>${label}</option>`).join('')}</select>`
+      + (extraActive() || filter || search ? `<button data-action="reset-filters">필터 초기화</button>` : '') + `</div>`;
+  }
+  html += panel(nav[2] + ' 내역', filterBar + table(head, body),
     tab === 'fixed' ? `현재 조회 ${rows.length}건 · ${won(sum(rows))} · ↻ 표시는 지난달에서 자동 적용된 항목이에요.` : '* 원본 날짜가 없는 항목은 해당 시트 시작일로 배정했습니다.');
   return html;
 }
@@ -259,7 +284,7 @@ $('form').onsubmit = e => {
 
 $('close').onclick = () => $('dialog').close();
 $('add').onclick = () => openForm();
-$('nav').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; search = ''; filter = ''; render(); } };
+$('nav').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; search = ''; filter = ''; extra = noExtra(); render(); } };
 $('content').onclick = e => {
   const b = e.target.closest('button');
   if (!b) return;
@@ -275,15 +300,21 @@ $('content').onclick = e => {
     render();
   }
   if (b.dataset.action === 'show-na') { filter = NA_FILTER; render(); }
+  if (b.dataset.action === 'reset-filters') { search = ''; filter = ''; extra = noExtra(); render(); }
   if (b.dataset.action === 'import') $('file').click();
 };
 $('content').oninput = e => { if (e.target.id === 'search') { const pos = e.target.selectionStart; search = e.target.value; render(); $('search').focus(); $('search').setSelectionRange(pos, pos); } };
-$('content').onchange = e => { if (e.target.id === 'filter') { filter = e.target.value; render(); } };
-$('month').onchange = () => { if (!/^\d{4}-\d{2}$/.test(key())) $('month').value = nowKey(); render(); };
+$('content').onchange = e => {
+  if (e.target.id === 'filter') { filter = e.target.value; render(); }
+  const field = e.target.dataset.extra;
+  if (field) { extra[field] = e.target.value; render(); $('content').querySelector(`[data-extra="${field}"]`)?.focus(); }
+};
+$('month').onchange = () => { if (!/^\d{4}-\d{2}$/.test(key())) $('month').value = nowKey(); extra.from = extra.to = ''; render(); };
 $('basis').onchange = () => { data.cycleDay = day(); save(); render(); };
 for (const [id, offset] of [['prev', -1], ['next', 1]]) $(id).onclick = () => {
   const [y, m] = key().split('-').map(Number), d = new Date(y, m - 1 + offset, 1);
   $('month').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  extra.from = extra.to = '';
   render();
 };
 $('backup').onclick = () => {
