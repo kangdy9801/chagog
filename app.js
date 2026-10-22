@@ -1,7 +1,7 @@
-const APP_VERSION = '2026.10.22-3';   // core.js · importer.js 와 같은 값이어야 함
+const APP_VERSION = '2026.10.22-4';   // core.js · importer.js 와 같은 값이어야 함
 const $ = id => document.getElementById(id);
 const { net, period, sum, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor } = Ledger;
-const blank = () => ({ version: 1, transactions: [], fixed: [], income: [], budgets: {}, categoryBudgets: {}, fixedMonths: {}, cycleDay: 21 });
+const blank = () => ({ version: 1, transactions: [], fixed: [], income: [], budgets: {}, categoryBudgets: {}, fixedMonths: {}, notes: {}, cycleDay: 21 });
 let data = blank(), tab = 'dashboard', mode = 'month', search = '', filter = '', editing = null;
 // 변동지출 내역 추가 필터 (카드 · 계좌 · 날짜 범위 · 금액 범위 · 정렬)
 const noExtra = () => ({ card: '', account: '', from: '', to: '', min: '', max: '', sort: 'date-desc' });
@@ -71,6 +71,16 @@ function donut(rows) {
   const gradient = g.map(([, n], i) => { const start = at; at += n / total * 100; return `${categoryColor(g[i][0])} ${start}% ${at}%`; }).join(',');
   return `<div class="donut-wrap"><div class="donut" style="background:${total ? `conic-gradient(${gradient})` : '#edf1ea'}"><div><span>변동지출</span><strong>${money(total)}</strong><span>원</span></div></div><div class="donut-key">${g.map(([k, n], i) => `<div class="key-row"><span><i class="dot" style="background:${categoryColor(k)}"></i>${esc(k)}</span><b>${(n / total * 100).toFixed(1)}%</b></div>`).join('') || '<p>기록을 추가하면<br>지출 비중이 표시돼요.</p>'}</div></div>`;
 }
+let selSeg = null;   // 월별 지출 흐름에서 누른 색: { k: 'YYYY-MM', c: 분류 }
+function segmentInfo() {
+  if (!selSeg || !yearKeys().includes(selSeg.k)) return '<p class="muted seg-hint">막대의 색을 누르면 그 달 그 분류에 얼마를 썼는지 나와요.</p>';
+  const all = monthStats(selSeg.k).tx.filter(t => t.category !== '적금'), rows = all.filter(t => (t.category || 'NA') === selSeg.c);
+  const total = sum(rows), monthTotal = sum(all), details = {};
+  rows.forEach(t => { const d = t.detail || 'NA'; details[d] = (details[d] || 0) + net(t); });
+  const top = Object.entries(details).sort((a, b) => b[1] - a[1]);
+  return `<div class="seg-info"><span class="dot" style="background:${categoryColor(selSeg.c)}"></span><div><b>${Number(selSeg.k.slice(5))}월 · ${esc(selSeg.c)} ${won(total)}</b> <span class="muted">그 달 변동지출의 ${monthTotal ? (total / monthTotal * 100).toFixed(1) : 0}% · ${rows.length}건</span>`
+    + `<p>${top.slice(0, 5).map(([d, n]) => `${esc(d)} ${won(n)}`).join(' · ')}${top.length > 5 ? ` 외 ${top.length - 5}개` : ''}</p></div><button data-action="seg-close" aria-label="닫기">✕</button></div>`;
+}
 function annualChart() {
   // 월별 막대를 분류별 색으로 쌓아서 표시 (지출 비중과 같은 색)
   const months = yearKeys().map(k => groups(monthStats(k).tx.filter(t => t.category !== '적금')).filter(x => x[1] > 0));
@@ -80,8 +90,8 @@ function annualChart() {
   const legend = present.length ? present.map(c => `<span><i class="dot" style="background:${categoryColor(c)}"></i>${esc(c)}</span>`).join('') : '<span>변동지출 · 고정지출 제외</span>';
   return `<div class="legend wrap">${legend}</div><div class="chart">${months.map((g, i) => {
     const segs = [...g].sort((a, b) => order(a[0]) - order(b[0]));
-    return `<div class="bar-col"><div class="bars"><div class="bar stack" title="${i + 1}월 변동지출 ${won(totals[i])}" style="height:${totals[i] / max * 150}px">${segs.map(([c, n]) => `<i title="${i + 1}월 ${esc(c)} ${won(n)}" style="height:${n / totals[i] * 100}%;background:${categoryColor(c)}"></i>`).join('')}</div></div><span>${i + 1}월</span></div>`;
-  }).join('')}</div>`;
+    return `<div class="bar-col"><div class="bars"><div class="bar stack" title="${i + 1}월 변동지출 ${won(totals[i])}" style="height:${totals[i] / max * 150}px">${segs.map(([c, n]) => `<i data-seg="${yearKeys()[i]}|${esc(c)}" class="${selSeg && selSeg.k === yearKeys()[i] && selSeg.c === c ? 'sel' : ''}" title="${i + 1}월 ${esc(c)} ${won(n)}" style="height:${n / totals[i] * 100}%;background:${categoryColor(c)}"></i>`).join('')}</div></div><span>${i + 1}월</span></div>`;
+  }).join('')}</div>${segmentInfo()}`;
 }
 function annualTable() {
   const months = yearKeys().map(k => { const st = monthStats(k); return { st, p: fixedParts(st.fixed) }; });
@@ -93,18 +103,101 @@ function annualTable() {
   }).join(''));
 }
 
+// ---------- 대시보드: 이번 달 한눈에 ----------
+/** 집계 기간 안에서 얼마나 지났는지 (0~1), 남은 일수 */
+function periodPace(k) {
+  const now = nowKey();
+  if (k < now) return { pace: 1, left: 0, done: true };
+  if (k > now) return { pace: 0, left: null, done: false };
+  const [y, m] = k.split('-').map(Number), start = new Date(y, m - 1, day()), end = new Date(y, m, day());
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const total = Math.round((end - start) / 864e5), passed = Math.round((today - start) / 864e5) + 1;
+  return { pace: Math.min(1, passed / total), left: Math.max(0, total - passed), done: false };
+}
+/** 분류별: 이번 달 사용(계좌 기타 제외) · 입금 금액(예산) · 평소(최근 12개월 평균) · 상태 */
+function categoryHealth(k) {
+  const st = monthStats(k), deposits = depositsFor(data, k).map, avg = baseline('avg12', k).cats, { pace } = periodPace(k);
+  const spentOf = c => sum(st.tx.filter(t => (t.category || 'NA') === c && t.account !== SIDE_ACCOUNT && t.category !== '적금'));
+  const cats = [...new Set([...Object.keys(deposits).filter(c => Number(deposits[c]) > 0), ...st.tx.filter(t => t.category !== '적금').map(t => t.category || 'NA')])];
+  return cats.map(c => {
+    const spent = spentOf(c), budget = Number(deposits[c] || 0), usual = avg[c] || 0, ratio = budget ? spent / budget : null;
+    let status = 'ok';
+    if (budget) {
+      if (ratio > 1) status = 'over';
+      else if (ratio > 0.9 || (pace < 1 && ratio > pace + 0.2)) status = 'warn';
+      else if (pace >= 0.5 && ratio < pace - 0.3) status = 'spare';
+    } else if (usual && spent > usual * 1.3 && spent - usual > 10000) status = 'warn';
+    return { c, spent, budget, usual, ratio, status };
+  }).filter(x => x.spent || x.budget).sort((a, b) => ['over', 'warn', 'ok', 'spare'].indexOf(a.status) - ['over', 'warn', 'ok', 'spare'].indexOf(b.status) || b.spent - a.spent);
+}
+/** 계좌별 잔액 (카드·계좌 예산과 같은 계산) */
+function accountHealth(st, k) {
+  const budgets = budgetsFor(data, k).list, sideIn = sum(st.income.filter(t => t.account === SIDE_ACCOUNT));
+  const rows = budgets.map(x => ({ account: x.account, amount: Number(x.amount || 0) }));
+  if (sideIn && !rows.some(r => r.account === SIDE_ACCOUNT)) rows.push({ account: SIDE_ACCOUNT, amount: 0 });
+  const allocated = sum(budgets, x => Number(x.amount || 0)), mainIncome = sum(st.income) - sideIn;
+  return {
+    rows: rows.map(r => { const b = budgetStats(st.tx, r.account, r.amount), money = r.amount + (r.account === SIDE_ACCOUNT ? sideIn : 0); return { ...r, money, spent: b.used + b.carry, remaining: money - b.used - b.carry }; }),
+    leftover: mainIncome - allocated - st.fixedTotal, mainIncome,
+  };
+}
+const josa = (word, a, b) => { const ch = word.charCodeAt(word.length - 1) - 0xac00; return ch >= 0 && ch <= 11171 && ch % 28 ? a : b; };
+/** 한 줄 조언 */
+function adviceLine(k) {
+  const health = categoryHealth(k), acc = accountHealth(monthStats(k), k), { left, done } = periodPace(k);
+  const names = list => list.map(x => x.c).slice(0, 3).join('·');
+  const over = health.filter(x => x.status === 'over'), warn = health.filter(x => x.status === 'warn'), spare = health.filter(x => x.status === 'spare');
+  const minus = acc.rows.filter(r => r.remaining < 0);
+  const parts = [];
+  if (over.length) parts.push(`${names(over)}${josa(names(over), '이', '가')} 예산을 넘었어요`);
+  if (warn.length) parts.push(done ? `${names(warn)}${josa(names(warn), '은', '는')} 거의 다 썼어요` : `${names(warn)}${josa(names(warn), '은', '는')} 쓰는 속도가 빨라요${left ? ` — 남은 ${left}일은 줄여 보세요` : ''}`);
+  if (minus.length) parts.push(`${minus.map(r => r.account).join('·')} 계좌 잔액이 마이너스예요`);
+  if (spare.length) parts.push(`${names(spare)}${josa(names(spare), '은', '는')} 여유가 있어요${over.length || warn.length ? ' — 그쪽 예산을 옮겨 써도 돼요' : ''}`);
+  if (acc.leftover < 0) parts.push(`수입보다 배정·고정지출이 ${won(-acc.leftover)} 많아요`);
+  if (!parts.length) {
+    if (!health.length) return { tone: 'calm', text: '아직 이 달 기록이 없어요. 첫 지출을 기록해 보세요.' };
+    return { tone: 'good', text: health.some(x => x.budget) ? '모든 분류가 예산 안에서 잘 가고 있어요. 지금처럼만 쓰면 돼요 👍' : '분류별 입금 금액(세부지출내역)을 넣으면 예산 대비 조언을 드릴 수 있어요.' };
+  }
+  return { tone: over.length || minus.length || acc.leftover < 0 ? 'bad' : warn.length ? 'warn' : 'good', text: parts.join(' · ') + '.' };
+}
+/** 지난달 돌아보기 (새 달이 시작되는 21일부터 자동으로 지난달 기준) */
+function reviewLine(k) {
+  const prev = addMonths(k, -1), cur = monthCats(prev);
+  if (!cur.has) return '';
+  const avg = baseline('avg12', prev), h = categoryHealth(prev), over = h.filter(x => x.status === 'over'), top = h.slice().sort((a, b) => b.spent - a.spent)[0];
+  const vs = avg.total ? ` (평소 대비 ${cur.total >= avg.total ? '▲' : '▼'}${Math.abs(Math.round((cur.total - avg.total) / avg.total * 100))}%)` : '';
+  return `${Number(prev.slice(5))}월 변동지출 ${won(cur.total)}${vs} · 가장 많이 쓴 분류는 ${top ? `${top.c} ${won(top.spent)}` : '-'}${over.length ? ` · 예산 초과: ${over.map(x => x.c).join(', ')}` : ' · 예산 초과 없음'}`;
+}
+const STATUS = { over: ['초과', 'bad'], warn: ['주의', 'warn'], ok: ['적정', 'ok'], spare: ['여유', 'good'] };
+function glancePanel(s) {
+  const k = key(), advice = adviceLine(k), health = categoryHealth(k), acc = accountHealth(s, k), { pace, done, left } = periodPace(k);
+  const paceText = done ? '지난 달' : pace === 0 ? '시작 전' : `기간 ${Math.round(pace * 100)}% 지남 · ${left}일 남음`;
+  const catRows = health.map(x => {
+    const pct = x.budget ? x.spent / x.budget * 100 : null, [label, cls] = STATUS[x.status];
+    return `<div class="g-row"><span class="tag">${x.c === 'NA' ? 'NA' : esc(x.c)}</span><div class="g-bar">${x.budget ? `<i class="${cls}" style="width:${Math.min(100, pct)}%"></i>${!done && pace > 0 ? `<em style="left:${pace * 100}%" title="지금까지 지난 기간"></em>` : ''}` : `<i class="none" style="width:${x.usual ? Math.min(100, x.spent / x.usual * 50) : 0}%"></i>`}</div>`
+      + `<span class="g-num">${won(x.spent)}<small>${x.budget ? ` / ${won(x.budget)}` : x.usual ? ` · 평소 ${won(x.usual)}` : ''}</small></span><span class="pill ${cls}">${x.budget ? `${label} ${Math.round(pct)}%` : x.status === 'warn' ? '평소보다 많음' : '예산 없음'}</span></div>`;
+  }).join('') || '<p class="muted">이 달 변동지출이 아직 없어요.</p>';
+  const accRows = acc.rows.map(r => {
+    const used = r.money ? r.spent / r.money * 100 : (r.spent ? 100 : 0), cls = r.remaining < 0 ? 'bad' : used > 90 ? 'warn' : 'ok';
+    return `<div class="g-row"><b class="g-acc">${esc(r.account)}</b><div class="g-bar"><i class="${cls}" style="width:${Math.min(100, used)}%"></i></div><span class="g-num ${r.remaining < 0 ? 'negative' : ''}">${won(r.remaining)}<small> 남음</small></span></div>`;
+  }).join('') || '<p class="muted">카드·계좌 예산을 넣으면 계좌별 잔액이 보여요.</p>';
+  const note = data.notes?.[k] || '', review = reviewLine(k);
+  return `<section class="panel glance"><div class="panel-head"><div><h2>이번 달 한눈에</h2><p>${range(k)} · ${paceText}</p></div></div>`
+    + `<div class="advice ${advice.tone}"><span>💡</span><p>${esc(advice.text)}</p></div>`
+    + `<div class="glance-grid"><div><h3>분류별 예산 사용</h3><p class="muted">세부지출내역의 입금 금액 기준 · 세로선은 지금까지 지난 기간</p>${catRows}</div>`
+    + `<div><h3>계좌별 잔액</h3><p class="muted">카드·계좌 예산 기준</p>${accRows}<div class="g-left ${acc.leftover < 0 ? 'negative' : ''}">${acc.leftover < 0 ? '부족한 금액' : '남는 금액 · 용돈'} <b>${won(Math.abs(acc.leftover))}</b><small>수입 − 계좌 예산 − 고정지출</small></div></div></div>`
+    + `<div class="memo"><div class="memo-head"><h3>📝 ${Number(k.slice(5))}월 특이사항</h3><button data-action="note">${note ? '메모 수정' : '메모 쓰기'}</button></div>`
+    + `${note ? `<p class="memo-text">${esc(note).replace(/\n/g, '<br>')}</p>` : `<p class="muted">매달 21일 새 달이 시작되면 지난달을 돌아보며 이번 달 특이사항을 적어 두세요.</p>`}`
+    + `${review ? `<p class="review">↩ 지난달 돌아보기 · ${esc(review)}</p>` : ''}</div></section>`;
+}
+
 function renderDashboard(s) {
   const a = mode === 'year' ? aggregate() : s;
   let html = `<div class="panel-head"><div><h2>${mode === 'year' ? key().slice(0, 4) + '년 한눈에 보기' : Number(key().slice(5)) + '월의 흐름'}</h2><p>${mode === 'year' ? '1월~12월 · 선택한 집계 기준 적용' : range(key())}</p></div><div><button data-mode="month" class="${mode === 'month' ? 'primary' : ''}">월간</button> <button data-mode="year" class="${mode === 'year' ? 'primary' : ''}">연간</button></div></div>`;
   html += `<div class="cards">${metric('총 수입', a.incomeTotal, '수입 내역 자동 합산')}${metric('변동지출', a.variable, '결제 금액 − 할인 및 엔빵')}${metric('고정지출', a.fixedTotal, fixedPartsText(fixedParts(a.fixed)))}${metric('남은 금액', a.incomeTotal - a.variable - a.fixedTotal, '수입 − 변동지출 − 고정지출', true)}</div>`;
-  html += `<div class="grid">${panel('월별 지출 흐름', annualChart(), key().slice(0, 4) + '년 · 변동지출 기준 (고정지출·적금 제외)')}${panel('지출 비중', donut(a.tx), '변동지출 기준 · 고정지출 제외')}</div>`;
-  if (mode === 'year') html += panel('월간 현황표', annualTable(), '월은 집계 기간의 시작 월로 표시합니다.');
-  else html += panel('월간 현황표', table(['항목', '금액', '집계 기준'], [
-    ['이번 달 일반 사용', sum(s.tx.filter(t => !Ledger.special(t))), '이월·기타 제외'],
-    ['이월·기타', sum(s.tx.filter(Ledger.special)), '분류가 이월 또는 기타인 거래'],
-    ...(() => { const p = fixedParts(s.fixed); return [...FIXED_PARTS.map(k => [`고정지출 · ${k}`, p[k], `분류가 ${k}인 고정지출`]), ...(p['그 외'] ? [['고정지출 · 그 외', p['그 외'], '모임·적금·주식 외 고정지출']] : [])]; })(),
-    ['고정지출 합계', s.fixedTotal, '매월 자동 적용 · 그래프 제외'],
-  ].map(r => `<tr><td>${r[0]}</td><td>${won(r[1])}</td><td>${r[2]}</td></tr>`).join('')), range(key()));
+  if (mode === 'month') html += glancePanel(s);
+  html += `<div class="grid">${panel('월별 지출 흐름', annualChart(), key().slice(0, 4) + '년 · 변동지출 기준 (고정지출·적금 제외) · 색을 누르면 내역')}${panel('지출 비중', donut(a.tx), '변동지출 기준 · 고정지출 제외')}</div>`;
+  if (mode === 'year') html += panel('연간 현황표', annualTable(), '월은 집계 기간의 시작 월로 표시합니다.');
   return html;
 }
 
@@ -392,8 +485,16 @@ function openDepositForm() {
   $('formError').textContent = '';
   $('dialog').showModal();
 }
+function openNoteForm() {
+  editing = { id: null, type: 'note' };
+  $('dialogTitle').textContent = `${monthLabel(key())} 특이사항`;
+  $('fields').innerHTML = `<label class="wide">이번 달에 있었던 일, 다음 달에 신경 쓸 점<textarea name="note" rows="7" maxlength="3000" placeholder="예) 9월은 추석·결혼식으로 이벤트 지출이 많았음. 10월은 생활비를 40만원 안으로.">${esc(data.notes?.[key()] || '')}</textarea></label><p class="muted wide">↩ ${esc(reviewLine(key()) || '지난달 기록이 없어요.')}</p>`;
+  $('formError').textContent = '';
+  $('dialog').showModal();
+}
 function openForm(id = null, type = tab, prefill = {}) {
   if (type === 'deposit') return openDepositForm();
+  if (type === 'note') return openNoteForm();
   if (!['transactions', 'fixed', 'income', 'cards'].includes(type)) type = 'transactions';
   editing = { id, type };
   const s = monthStats(key());
@@ -431,6 +532,13 @@ $('form').onsubmit = e => {
   e.preventDefault();
   const { id, type } = editing, tx = type === 'transactions';
   const values = Object.fromEntries(new FormData(e.target));
+  if (type === 'note') {
+    const text = String(values.note || '').trim();
+    data.notes ??= {};
+    if (text) data.notes[key()] = text; else delete data.notes[key()];
+    save(); $('dialog').close(); render(); toast(text ? '특이사항을 저장했어요.' : '특이사항을 지웠어요.');
+    return;
+  }
   if (type === 'deposit') {
     const next = {};
     for (const [k, v] of Object.entries(values)) if (k.startsWith('dep:') && +v > 0) next[k.slice(4)] = Math.round(+v);
@@ -466,8 +574,16 @@ $('close').onclick = () => $('dialog').close();
 $('add').onclick = () => openForm();
 $('nav').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { tab = b.dataset.tab; search = ''; filter = ''; extra = noExtra(); render(); } };
 $('content').onclick = e => {
+  const seg = e.target.closest('[data-seg]');
+  if (seg) {
+    const [k, ...c] = seg.dataset.seg.split('|'), cat = c.join('|');
+    selSeg = selSeg && selSeg.k === k && selSeg.c === cat ? null : { k, c: cat };
+    return render();
+  }
   const b = e.target.closest('button');
   if (!b) return;
+  if (b.dataset.action === 'seg-close') { selSeg = null; render(); }
+  if (b.dataset.action === 'note') openForm(null, 'note');
   if (b.dataset.mode) { mode = b.dataset.mode; render(); }
   if (b.dataset.edit) openForm(b.dataset.edit);
   if (b.dataset.delete && confirm('이 내역을 삭제할까요?')) {
@@ -541,6 +657,8 @@ function validate(d) {
   for (const [k, rows] of Object.entries(d.categoryBudgets)) {
     if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || !rows || typeof rows !== 'object' || Object.values(rows).some(v => !Number.isFinite(v) || v < 0)) throw Error('분류 예산 오류');
   }
+  if (d.notes == null) d.notes = {};
+  if (typeof d.notes !== 'object' || Array.isArray(d.notes) || Object.entries(d.notes).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || typeof v !== 'string' || v.length > 3000)) throw Error('월별 메모 형식 오류');
   if (d.fixedMonths == null) d.fixedMonths = {};
   if (typeof d.fixedMonths !== 'object' || Array.isArray(d.fixedMonths) || Object.entries(d.fixedMonths).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || typeof v !== 'boolean')) throw Error('고정지출 월 정보 오류');
   return d;
