@@ -1,5 +1,5 @@
 const $ = id => document.getElementById(id);
-const { net, period, sum, stats, budgetStats, fixedFor, fixedSource, budgetsFor } = Ledger;
+const { net, period, sum, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor } = Ledger;
 const blank = () => ({ version: 1, transactions: [], fixed: [], income: [], budgets: {}, categoryBudgets: {}, fixedMonths: {}, cycleDay: 21 });
 let data = blank(), tab = 'dashboard', mode = 'month', search = '', filter = '', editing = null;
 // 변동지출 내역 추가 필터 (카드 · 계좌 · 날짜 범위 · 금액 범위 · 정렬)
@@ -10,6 +10,9 @@ const SORTS = { 'date-desc': ['최신순', (a, b) => b.date.localeCompare(a.date
   'amount-desc': ['실지출 큰 순', (a, b) => net(b) - net(a)], 'amount-asc': ['실지출 작은 순', (a, b) => net(a) - net(b)] };
 const extraActive = () => Object.entries(extra).some(([k, v]) => v !== noExtra()[k]);
 const NA_FILTER = '__NA__';
+// 계좌 구분 '기타' = 출장비·부수입 같은 수입으로 따로 충당하는 지출
+// → 세부 지출 내역의 분류 합계에서 빠지고, 카드·계좌 예산에서는 '기타' 계좌로 수입과 맞춰 봄
+const SIDE_ACCOUNT = '기타';
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pad = n => String(n).padStart(2, '0');
@@ -122,7 +125,8 @@ function renderList(s, nav) {
   html += `<div class="cards">${cards}</div>`;
 
   const filterOptions = `<option value="">전체 분류</option>${tab === 'transactions' ? `<option value="${NA_FILTER}" ${filter === NA_FILTER ? 'selected' : ''}>NA(미입력) 있는 기록만</option>` : ''}${cats.map(c => `<option value="${esc(c)}" ${filter === c ? 'selected' : ''}>${esc(c)}</option>`).join('')}`;
-  const head = tab === 'transactions' ? ['날짜', '구분', '지출 내역', '결제 금액', '할인·엔빵', '실지출', '카드', '계좌', '비고', '관리'] : ['날짜', '구분', '내역', '금액', '결제수단', '비고', '관리'];
+  const head = tab === 'transactions' ? ['날짜', '구분', '지출 내역', '결제 금액', '할인·엔빵', '실지출', '카드', '계좌', '비고', '관리']
+    : tab === 'income' ? ['날짜', '구분', '내역', '금액', '입금 수단', '계좌', '비고', '관리'] : ['날짜', '구분', '내역', '금액', '결제수단', '비고', '관리'];
   const body = rows.map(t => {
     const isTx = tab === 'transactions';
     const cell = (v, empty) => (v ? esc(v) : empty);
@@ -132,7 +136,7 @@ function renderList(s, nav) {
       + `<td>${t.amount == null ? NA : won(t.amount)}</td>`
       + (isTx ? `<td>${won(t.discount || 0)}</td><td><b>${t.amount == null ? NA : won(net(t))}</b></td>` : '')
       + `<td>${cell(t.card, isTx ? NA : '—')}</td>`
-      + (isTx ? `<td>${cell(t.account, NA)}</td>` : '')
+      + (isTx ? `<td>${cell(t.account, NA)}</td>` : tab === 'income' ? `<td>${cell(t.account, '—')}</td>` : '')
       + `<td>${cell(t.note, '—')}</td>`
       + `<td><button data-edit="${esc(t.id)}">수정</button><button data-delete="${esc(t.id)}">삭제</button></td></tr>`;
   }).join('');
@@ -150,19 +154,28 @@ function renderList(s, nav) {
       + (extraActive() || filter || search ? `<button data-action="reset-filters">필터 초기화</button>` : '') + `</div>`;
   }
   html += panel(nav[2] + ' 내역', filterBar + table(head, body),
-    tab === 'fixed' ? `현재 조회 ${rows.length}건 · ${won(sum(rows))} · ↻ 표시는 지난달에서 자동 적용된 항목이에요.` : '* 원본 날짜가 없는 항목은 해당 시트 시작일로 배정했습니다.');
+    tab === 'fixed' ? `현재 조회 ${rows.length}건 · ${won(sum(rows))} · ↻ 표시는 지난달에서 자동 적용된 항목이에요.` : '* 원본 날짜가 없는 항목은 해당 시트 시작일로 배정했습니다.', `<button data-action="import-rows">📋 엑셀 가져오기</button>`);
   return html;
 }
 
 function renderCards(s) {
-  const b = budgetsFor(data, key()), budgets = b.list, missing = s.tx.filter(t => !budgets.some(x => x.account === t.account));
-  let html = `<div class="notice">엑셀과 동일하게 <b>계좌 구분</b>으로 합산합니다. 이월·기타는 거래의 분류를 기준으로 자동 계산하며, 전월 잔여 예산을 자동으로 더하지 않습니다.</div>`;
+  const b = budgetsFor(data, key()), budgets = b.list;
+  // 수입에 계좌 구분을 넣으면(예: 출장비 → 기타) 그 계좌에 들어온 돈으로 함께 계산
+  const incomeIn = acc => sum(s.income.filter(t => t.account === acc));
+  const incomeOnly = [...new Set(s.income.map(t => t.account).filter(a => a && !budgets.some(x => x.account === a)))];
+  const known = acc => budgets.some(x => x.account === acc) || incomeOnly.includes(acc);
+  const missing = s.tx.filter(t => !known(t.account));
+  let html = `<div class="notice">엑셀과 동일하게 <b>계좌 구분</b>으로 합산합니다. 이월·기타는 거래의 분류를 기준으로 자동 계산하며, 전월 잔여 예산을 자동으로 더하지 않습니다. 출장비·부수입처럼 <b>계좌 구분을 ‘기타’로 넣은 수입</b>은 기타 계좌의 쓸 수 있는 돈으로 잡혀요.</div>`;
   if (!b.own && b.from) html += `<div class="notice"><b>${monthLabel(b.from)}</b> 예산을 이 달에도 그대로 적용하고 있어요. 수정·삭제·추가하면 이 달부터 바뀐 예산이 적용되고 다음 달에도 이어져요.</div>`;
   else if (b.own && budgets.length) html += `<div class="notice">이 달 예산은 다음 달에도 그대로 이어서 적용돼요. 바뀌는 달에만 그 달에서 수정하면 돼요.</div>`;
-  html += panel('카드·계좌별 예산', table(['계좌 / 결제수단', '배정 예산', '이번 달 사용', '이월·기타', '잔여 예산', '관리'], budgets.map(x => {
-    const r = budgetStats(s.tx, x.account, x.amount);
-    return `<tr><td><b>${esc(x.account)}</b></td><td>${won(x.amount)}</td><td>${won(r.used)}</td><td>${won(r.carry)}</td><td class="${r.remaining < 0 ? 'negative' : ''}"><b>${won(r.remaining)}</b></td><td><button data-edit="${esc(x.id)}">수정</button><button data-delete="${esc(x.id)}">삭제</button></td></tr>`;
-  }).join('')), '계좌명과 배정 예산 직접 입력 · 사용 내역 자동 합산');
+  const row = (account, amount, manage) => {
+    const r = budgetStats(s.tx, account, amount), inc = incomeIn(account), remaining = r.remaining + inc;
+    return `<tr><td><b>${esc(account)}</b></td><td>${won(amount)}</td><td>${inc ? won(inc) : '<span class="muted">-</span>'}</td><td>${won(r.used)}</td><td>${won(r.carry)}</td><td class="${remaining < 0 ? 'negative' : ''}"><b>${won(remaining)}</b></td><td>${manage}</td></tr>`;
+  };
+  html += panel('카드·계좌별 예산', table(['계좌 / 결제수단', '배정 예산', '수입 입금', '이번 달 사용', '이월·기타', '잔여 예산', '관리'],
+    budgets.map(x => row(x.account, x.amount, `<button data-edit="${esc(x.id)}">수정</button><button data-delete="${esc(x.id)}">삭제</button>`)).join('')
+    + incomeOnly.map(a => row(a, 0, '<span class="muted">수입으로 충당</span>')).join('')),
+  '잔여 예산 = 배정 예산 + 수입 입금 − 이번 달 사용 − 이월·기타');
   if (missing.length) html += `<div class="notice">예산에 연결되지 않은 거래 ${missing.length}건 · ${won(sum(missing))}. 거래의 계좌 구분을 수정하거나 해당 계좌의 예산을 추가해 주세요.</div>`;
   html += panel('실제 카드별 사용 내역', table(['카드', '건수', '실지출'], [...new Set(s.tx.map(t => t.card || ''))].map(c => {
     const rows = s.tx.filter(t => (t.card || '') === c);
@@ -225,16 +238,58 @@ function categoryCompare(cur) {
   return panel('분류별 비교', body, `이번 달과 ${b.label}${b.n > 1 ? `(${b.n}개월)` : ''}을 분류별로 비교 · 평균은 기록이 있는 달만 계산`, select);
 }
 
+// ---------- 세부 지출 내역 (엑셀 표 형식) ----------
+// 분류 → 세부 사용 내역 기본 목록. 기록에 새 세부 내역이 생기면 자동으로 아래에 추가됨
+const DETAIL_TEMPLATE = [
+  ['교통', ['기름', '대중교통', '하이패스', '주차', '기타']],
+  ['데이트', ['식비', '카페', '여행', '기타']],
+  ['통신', ['휴대폰']],
+  ['생활', ['식비', '카페', '병원', '공부', '운동', '편의점', '친목', '기타', '생활용품', '여행', '선물']],
+  ['회사', ['식비', '카페', '편의점', '간식', '기타']],
+  ['이벤트', ['결혼', '장례식', '생일', '주디', '차량정비', '기타']],
+  ['이월', ['할부', '기타']],
+  ['기타', ['기타']],
+];
+const dash = v => (Math.round(v) ? won(v) : '<span class="muted">-</span>');
+function detailCategories(rows, deposits) {
+  const list = DETAIL_TEMPLATE.map(([c, d]) => [c, [...d]]);
+  const find = c => list.find(x => x[0] === c);
+  for (const t of rows) {
+    const c = t.category || 'NA', d = t.detail || 'NA';
+    if (!find(c)) list.push([c, []]);
+    if (!find(c)[1].includes(d)) find(c)[1].push(d);
+  }
+  for (const c of Object.keys(deposits)) if (!find(c)) list.push([c, ['기타']]);
+  return list;
+}
+function detailTable(s) {
+  const dep = depositsFor(data, key()), deposits = dep.map;
+  const cats = detailCategories(s.tx, deposits);
+  const inCat = (c, d) => s.tx.filter(t => (t.category || 'NA') === c && (d == null || (t.detail || 'NA') === d));
+  const spent = (c, d) => sum(inCat(c, d));
+  // 분류 합계는 계좌 구분이 '기타'(출장비 등 수입으로 충당)인 기록을 뺀 금액
+  let totalSpent = 0, totalDeposit = 0, totalNet = 0;
+  const body = cats.map(([c, details]) => {
+    const refund = sum(inCat(c).filter(t => t.account === SIDE_ACCOUNT)), catSpent = spent(c) - refund;
+    const deposit = Number(deposits[c] || 0), pct = deposit ? catSpent / deposit * 100 : 0;
+    totalSpent += spent(c); totalNet += catSpent; totalDeposit += deposit;
+    return details.map((d, i) => `<tr class="${i === 0 ? 'cat-first' : ''}">`
+      + (i === 0 ? `<td rowspan="${details.length}" class="cat-cell">${c === 'NA' ? NA : `<span class="tag">${esc(c)}</span>`}</td>` : '')
+      + `<td>${d === 'NA' ? NA : esc(d)}</td><td class="num">${dash(spent(c, d))}</td>`
+      + (i === 0 ? `<td rowspan="${details.length}" class="num cat-cell">${dash(deposit)}</td><td rowspan="${details.length}" class="num cat-cell"><b>${dash(catSpent)}</b>${refund ? `<div class="muted refund-note">계좌 기타 ${won(refund)} 제외</div>` : ''}${deposit ? `<div class="progress${catSpent > deposit ? ' over' : ''}"><i style="width:${Math.min(100, pct)}%"></i></div><span class="muted ${catSpent > deposit ? 'up' : ''}">${Math.round(pct)}% 사용</span>` : ''}</td>` : '')
+      + `</tr>`).join('');
+  }).join('') + `<tr class="totals"><td colspan="2">합계</td><td class="num">${won(totalSpent)}</td><td class="num">${won(totalDeposit)}</td><td class="num">${won(totalNet)}</td></tr>`;
+  const note = !dep.own && dep.from ? ` · 입금 금액은 ${monthLabel(dep.from)} 값을 이어서 적용 중` : '';
+  return panel('세부 지출 내역', `<div class="table-wrap"><table class="detail-table"><thead><tr><th>사용 내역</th><th>세부 사용 내역</th><th class="num">지출 금액</th><th class="num">입금 금액</th><th class="num">지출 금액 (분류 합계)</th></tr></thead><tbody>${body}</tbody></table></div>`,
+    `지출 금액은 변동지출 기록에서 자동 합산 · 분류 합계는 계좌 구분 ‘기타’(출장비 등 수입으로 충당) 제외 · 입금 금액은 직접 입력(다음 달에도 이어서 적용)${note}`, `<button data-action="deposit">입금 금액 편집</button>`);
+}
+
 function renderDetails(s) {
-  const pairs = {}, cur = monthCats(key());
-  s.tx.forEach(t => { const k = JSON.stringify([t.category || 'NA', t.detail || 'NA']); pairs[k] = (pairs[k] || 0) + net(t); });
-  let html = compareCards(cur);
+  const cur = monthCats(key());
+  let html = detailTable(s);
+  html += compareCards(cur);
   html += `<div class="grid">${panel('월별 추이', trendChart(cur), '최근 12개월 변동지출 · 점선은 지난 12개월 평균')}${panel('분류별 지출 비중', donut(s.tx), '변동지출 기준 · 적금 제외')}</div>`;
   html += categoryCompare(cur);
-  html += panel('세부지출내역', table(['사용 내역', '세부 사용 내역', '실지출', '변동지출 내 비중'], Object.entries(pairs).sort((a, b) => b[1] - a[1]).map(([k, n]) => {
-    const [c, d] = JSON.parse(k);
-    return `<tr><td>${c === 'NA' ? NA : `<span class="tag">${esc(c)}</span>`}</td><td>${d === 'NA' ? NA : esc(d)}</td><td>${won(n)}</td><td>${s.variable ? (n / s.variable * 100).toFixed(1) : 0}%</td></tr>`;
-  }).join('')), '변동지출의 구분 + 지출 내역 기준 · 입력 즉시 자동 반영');
   return html;
 }
 
@@ -276,9 +331,20 @@ function ownBudgets() {
 const SUGGEST = {
   transactions: ['생활', '교통', '데이트', '회사', '통신', '이벤트', '이월', '기타'],
   fixed: ['적금', '주식', '모임', '통신', '보험', '월세', '구독'],
-  income: ['급여', '부수입', '용돈', '이자', '환급', '기타'],
+  income: ['급여', '출장비', '부수입', '용돈', '이자', '환급', '기타'],
 };
+function openDepositForm() {
+  editing = { id: null, type: 'deposit' };
+  const s = monthStats(key()), deposits = depositsFor(data, key()).map;
+  $('dialogTitle').textContent = `입금 금액 · ${monthLabel(key())}`;
+  $('fields').innerHTML = detailCategories(s.tx, deposits).filter(([c]) => c !== 'NA').map(([c]) =>
+    `<label>${esc(c)}<input name="dep:${esc(c)}" type="number" min="0" step="1" value="${Number(deposits[c] || 0)}"></label>`).join('')
+    + `<p class="muted" style="grid-column:1/-1">이 달부터 적용되고, 다음 달에도 같은 금액이 이어서 적용돼요. 이전 달은 바뀌지 않아요.</p>`;
+  $('formError').textContent = '';
+  $('dialog').showModal();
+}
 function openForm(id = null, type = tab) {
+  if (type === 'deposit') return openDepositForm();
   if (!['transactions', 'fixed', 'income', 'cards'].includes(type)) type = 'transactions';
   editing = { id, type };
   const s = monthStats(key());
@@ -302,10 +368,11 @@ function openForm(id = null, type = tab) {
     if (tx) fields += f('discount', '할인 및 엔빵', 'number', row.discount || 0);
     fields += f('card', '카드 / 결제수단', 'text', row.card || '', { list: 'cardsList', ...opt });
     if (tx) fields += f('account', '계좌 구분', 'text', row.account || '', { list: 'accounts', ...opt });
+    if (type === 'income') fields += f('account', '계좌 구분 (출장비·부수입은 기타)', 'text', row.account || '', { list: 'accounts' });
     fields += f('note', '비고', 'text', row.note || '');
   }
   const cats = type === 'cards' ? [] : [...new Set([...SUGGEST[type], ...data[type].map(t => t.category).filter(Boolean)])];
-  fields += `<datalist id="categories">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist><datalist id="accounts">${budgetsFor(data, key()).list.map(b => `<option value="${esc(b.account)}">`).join('')}</datalist><datalist id="cardsList">${[...new Set(data.transactions.map(t => t.card).filter(Boolean))].map(c => `<option value="${esc(c)}">`).join('')}</datalist>`;
+  fields += `<datalist id="categories">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist><datalist id="accounts">${[...new Set([...budgetsFor(data, key()).list.map(b => b.account), SIDE_ACCOUNT])].map(a => `<option value="${esc(a)}">`).join('')}</datalist><datalist id="cardsList">${[...new Set(data.transactions.map(t => t.card).filter(Boolean))].map(c => `<option value="${esc(c)}">`).join('')}</datalist>`;
   $('fields').innerHTML = fields;
   $('formError').textContent = '';
   $('dialog').showModal();
@@ -315,6 +382,14 @@ $('form').onsubmit = e => {
   e.preventDefault();
   const { id, type } = editing, tx = type === 'transactions';
   const values = Object.fromEntries(new FormData(e.target));
+  if (type === 'deposit') {
+    const next = {};
+    for (const [k, v] of Object.entries(values)) if (k.startsWith('dep:') && +v > 0) next[k.slice(4)] = Math.round(+v);
+    if (Object.values(values).some(v => v !== '' && (!Number.isFinite(+v) || +v < 0))) return void ($('formError').textContent = '입금 금액은 0 이상의 숫자로 입력해 주세요.');
+    data.categoryBudgets[key()] = next;
+    save(); $('dialog').close(); render(); toast('입금 금액을 저장했어요. 다음 달에도 이어서 적용돼요.');
+    return;
+  }
   for (const k of ['category', 'account', 'detail', 'card', 'note']) if (k in values) values[k] = values[k].trim();
   if ('amount' in values) values.amount = values.amount === '' ? (tx ? null : 0) : +values.amount;
   if ('discount' in values) values.discount = values.discount === '' ? 0 : +values.discount;
@@ -356,6 +431,8 @@ $('content').onclick = e => {
     render();
   }
   if (b.dataset.action === 'show-na') { filter = NA_FILTER; render(); }
+  if (b.dataset.action === 'deposit') openForm(null, 'deposit');
+  if (b.dataset.action === 'import-rows') window.ChagogImport?.open(tab);
   if (b.dataset.action === 'reset-filters') { search = ''; filter = ''; extra = noExtra(); render(); }
   if (b.dataset.action === 'import') $('file').click();
 };
@@ -394,6 +471,7 @@ function validate(d) {
       if (typeof t.id !== 'string' || ids.has(t.id) || !dateOK(t.date) || typeof t.category !== 'string' || !amountOK || !discountOK) throw Error('날짜, 금액 또는 ID가 잘못된 거래가 있습니다.');
       ids.add(t.id);
       for (const f of ['detail', 'card', 'note', 'account']) if (t[f] != null && typeof t[f] !== 'string') throw Error('문자 필드 형식이 잘못되었습니다.');
+      delete t.reimburse;   // 예전 버전의 '환급 예정' 표시는 더 이상 쓰지 않음
     }
   }
   for (const [k, rows] of Object.entries(d.budgets)) {
@@ -426,4 +504,20 @@ $('file').onchange = async e => {
 };
 render();
 
-window.LedgerApp = { empty: blank, snapshot: () => JSON.parse(JSON.stringify(data)), replace: d => { data = validate(d); $('basis').value = data.cycleDay; render(); } };
+window.LedgerApp = {
+  empty: blank,
+  snapshot: () => JSON.parse(JSON.stringify(data)),
+  replace: d => { data = validate(d); $('basis').value = data.cycleDay; render(); },
+  // 엑셀 가져오기(importer.js)용
+  context: () => ({ key: key(), day: day() }),
+  existing: type => JSON.parse(JSON.stringify(data[type] || [])),
+  importRows(type, rows) {
+    const next = JSON.parse(JSON.stringify(data));
+    next[type].push(...rows.map(r => ({ ...r, id: uid() })));
+    data = validate(next);   // 형식이 맞는지 한 번 더 확인한 뒤 반영
+    save();
+    render();
+    const months = [...new Set(rows.map(r => period(r.date, day())))].sort();
+    toast(`${rows.length}건을 가져왔어요${months.length ? ` (${months.map(monthLabel).join(', ')})` : ''}.`);
+  },
+};
