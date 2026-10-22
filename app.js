@@ -158,24 +158,36 @@ function renderList(s, nav) {
   return html;
 }
 
+/** 지금 달보다 뒤에 예산을 처음 입력한 달 (앞선 달로 가져오기용) */
+function laterBudgetMonth() {
+  return Object.keys(data.budgets).filter(k => k > key() && Array.isArray(data.budgets[k]) && data.budgets[k].length).sort()[0] || null;
+}
 function renderCards(s) {
   const b = budgetsFor(data, key()), budgets = b.list;
-  // 수입에 계좌 구분을 넣으면(예: 출장비 → 기타) 그 계좌에 들어온 돈으로 함께 계산
-  const incomeIn = acc => sum(s.income.filter(t => t.account === acc));
-  const incomeOnly = [...new Set(s.income.map(t => t.account).filter(a => a && !budgets.some(x => x.account === a)))];
+  // 월급 등 수입(예: 농협 입금)은 국민·CMA·농협 예산으로 나눠 쓰는 돈 → 예산 배분 확인에만 사용
+  // 계좌 구분을 '기타'로 넣은 수입(출장비·부수입)만 '기타' 계좌의 쓸 수 있는 돈으로 더함
+  const side = s.income.filter(t => t.account === SIDE_ACCOUNT), sideIn = sum(side);
+  const incomeIn = acc => (acc === SIDE_ACCOUNT ? sideIn : 0);
+  const incomeOnly = side.length && !budgets.some(x => x.account === SIDE_ACCOUNT) ? [SIDE_ACCOUNT] : [];
+  const mainIncome = sum(s.income) - sideIn, allocated = sum(budgets, x => Number(x.amount || 0));
+  // 남는 금액(용돈) = 수입 − 계좌 예산 배정 − 고정지출(모임·적금·주식 등)
+  const leftover = mainIncome - allocated - s.fixedTotal;
   const known = acc => budgets.some(x => x.account === acc) || incomeOnly.includes(acc);
   const missing = s.tx.filter(t => !known(t.account));
-  let html = `<div class="notice">엑셀과 동일하게 <b>계좌 구분</b>으로 합산합니다. 이월·기타는 거래의 분류를 기준으로 자동 계산하며, 전월 잔여 예산을 자동으로 더하지 않습니다. 출장비·부수입처럼 <b>계좌 구분을 ‘기타’로 넣은 수입</b>은 기타 계좌의 쓸 수 있는 돈으로 잡혀요.</div>`;
+  let html = `<div class="cards">${metric('이번 달 수입', mainIncome, sideIn ? `출장비·부수입 ${won(sideIn)} 제외` : '출장비·부수입(계좌 기타) 제외')}${metric('계좌 예산 배정', allocated, budgets.map(x => `${esc(x.account)} ${won(x.amount)}`).join(' · ') || '아직 배정 없음')}${metric('고정지출', s.fixedTotal, fixedPartsText(fixedParts(s.fixed)))}${metric(leftover < 0 ? '부족한 금액' : '남는 금액 · 용돈', Math.abs(leftover), leftover < 0 ? '수입보다 배정·고정지출이 많아요' : '수입 − 계좌 예산 − 고정지출', true)}</div>`;
+  html += `<div class="notice">월급처럼 들어온 수입을 <b>계좌별 예산으로 나눠</b> 관리합니다. 사용 금액은 지출의 <b>계좌 구분</b>으로 합산하고, 이월·기타는 거래의 분류를 기준으로 자동 계산하며, 전월 잔여 예산을 자동으로 더하지 않습니다. 출장비·부수입은 수입에서 <b>계좌 구분을 ‘기타’</b>로 넣으면 기타 계좌의 쓸 수 있는 돈으로 잡혀요.</div>`;
   if (!b.own && b.from) html += `<div class="notice"><b>${monthLabel(b.from)}</b> 예산을 이 달에도 그대로 적용하고 있어요. 수정·삭제·추가하면 이 달부터 바뀐 예산이 적용되고 다음 달에도 이어져요.</div>`;
   else if (b.own && budgets.length) html += `<div class="notice">이 달 예산은 다음 달에도 그대로 이어서 적용돼요. 바뀌는 달에만 그 달에서 수정하면 돼요.</div>`;
+  const later = laterBudgetMonth();
+  if (!b.own && !b.from) html += `<div class="notice">이 달에는 아직 계좌 예산이 없어요. 예산은 입력한 달부터 <b>다음 달로</b> 이어지기 때문에, 그보다 앞선 달은 비어 있어요.${later ? ` <button data-action="copy-budgets">${monthLabel(later)} 예산 그대로 가져오기</button>` : ''} 오른쪽 위 <b>＋ 계좌 예산</b>으로 직접 추가해도 돼요.</div>`;
   const row = (account, amount, manage) => {
     const r = budgetStats(s.tx, account, amount), inc = incomeIn(account), remaining = r.remaining + inc;
     return `<tr><td><b>${esc(account)}</b></td><td>${won(amount)}</td><td>${inc ? won(inc) : '<span class="muted">-</span>'}</td><td>${won(r.used)}</td><td>${won(r.carry)}</td><td class="${remaining < 0 ? 'negative' : ''}"><b>${won(remaining)}</b></td><td>${manage}</td></tr>`;
   };
-  html += panel('카드·계좌별 예산', table(['계좌 / 결제수단', '배정 예산', '수입 입금', '이번 달 사용', '이월·기타', '잔여 예산', '관리'],
+  html += panel('카드·계좌별 예산', table(['계좌 / 결제수단', '배정 예산', '출장비·부수입', '이번 달 사용', '이월·기타', '잔여 예산', '관리'],
     budgets.map(x => row(x.account, x.amount, `<button data-edit="${esc(x.id)}">수정</button><button data-delete="${esc(x.id)}">삭제</button>`)).join('')
-    + incomeOnly.map(a => row(a, 0, '<span class="muted">수입으로 충당</span>')).join('')),
-  '잔여 예산 = 배정 예산 + 수입 입금 − 이번 달 사용 − 이월·기타');
+    + incomeOnly.map(a => row(a, 0, '<span class="muted">출장비·부수입으로 충당</span>')).join('')),
+  '잔여 예산 = 배정 예산 − 이번 달 사용 − 이월·기타 · 기타 계좌는 출장비·부수입을 더해 계산');
   if (missing.length) html += `<div class="notice">예산에 연결되지 않은 거래 ${missing.length}건 · ${won(sum(missing))}. 거래의 계좌 구분을 수정하거나 해당 계좌의 예산을 추가해 주세요.</div>`;
   html += panel('실제 카드별 사용 내역', table(['카드', '건수', '실지출'], [...new Set(s.tx.map(t => t.card || ''))].map(c => {
     const rows = s.tx.filter(t => (t.card || '') === c);
@@ -343,7 +355,7 @@ function openDepositForm() {
   $('formError').textContent = '';
   $('dialog').showModal();
 }
-function openForm(id = null, type = tab) {
+function openForm(id = null, type = tab, prefill = {}) {
   if (type === 'deposit') return openDepositForm();
   if (!['transactions', 'fixed', 'income', 'cards'].includes(type)) type = 'transactions';
   editing = { id, type };
@@ -351,7 +363,7 @@ function openForm(id = null, type = tab) {
   let row = type === 'cards' ? budgetsFor(data, key()).list.find(x => x.id === id)
     : type === 'fixed' ? s.fixed.find(x => x.id === id)
       : data[type].find(x => x.id === id);
-  row = row || {};
+  row = row || { ...prefill };
   const tx = type === 'transactions';
   $('dialogTitle').textContent = (id ? '수정' : '추가') + ' · ' + ({ transactions: '변동지출', fixed: '고정지출', income: '수입', cards: '계좌 예산' }[type]);
   // 변동지출은 날짜 외에 모두 비워 둘 수 있음(NA) → 나중에 수정해서 채우기
@@ -368,11 +380,11 @@ function openForm(id = null, type = tab) {
     if (tx) fields += f('discount', '할인 및 엔빵', 'number', row.discount || 0);
     fields += f('card', '카드 / 결제수단', 'text', row.card || '', { list: 'cardsList', ...opt });
     if (tx) fields += f('account', '계좌 구분', 'text', row.account || '', { list: 'accounts', ...opt });
-    if (type === 'income') fields += f('account', '계좌 구분 (출장비·부수입은 기타)', 'text', row.account || '', { list: 'accounts' });
+    if (type === 'income') fields += f('account', '계좌 구분 (월급은 입금 계좌, 출장비·부수입은 기타)', 'text', row.account || '', { list: 'incomeAccounts' });
     fields += f('note', '비고', 'text', row.note || '');
   }
   const cats = type === 'cards' ? [] : [...new Set([...SUGGEST[type], ...data[type].map(t => t.category).filter(Boolean)])];
-  fields += `<datalist id="categories">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist><datalist id="accounts">${[...new Set([...budgetsFor(data, key()).list.map(b => b.account), SIDE_ACCOUNT])].map(a => `<option value="${esc(a)}">`).join('')}</datalist><datalist id="cardsList">${[...new Set(data.transactions.map(t => t.card).filter(Boolean))].map(c => `<option value="${esc(c)}">`).join('')}</datalist>`;
+  fields += `<datalist id="categories">${cats.map(c => `<option value="${esc(c)}">`).join('')}</datalist><datalist id="incomeAccounts">${[...new Set([...data.income.map(t => t.account).filter(a => a && a !== SIDE_ACCOUNT), SIDE_ACCOUNT])].map(a => `<option value="${esc(a)}">`).join('')}</datalist><datalist id="accounts">${[...new Set([...budgetsFor(data, key()).list.map(b => b.account), SIDE_ACCOUNT])].map(a => `<option value="${esc(a)}">`).join('')}</datalist><datalist id="cardsList">${[...new Set(data.transactions.map(t => t.card).filter(Boolean))].map(c => `<option value="${esc(c)}">`).join('')}</datalist>`;
   $('fields').innerHTML = fields;
   $('formError').textContent = '';
   $('dialog').showModal();
@@ -432,6 +444,11 @@ $('content').onclick = e => {
   }
   if (b.dataset.action === 'show-na') { filter = NA_FILTER; render(); }
   if (b.dataset.action === 'deposit') openForm(null, 'deposit');
+  if (b.dataset.addBudget) openForm(null, 'cards', { account: b.dataset.addBudget });
+  if (b.dataset.action === 'copy-budgets') {
+    const from = laterBudgetMonth();
+    if (from) { data.budgets[key()] = JSON.parse(JSON.stringify(data.budgets[from])); save(); render(); toast(`${monthLabel(from)} 예산을 가져왔어요. 이 달에서 고치면 이 달부터 적용돼요.`); }
+  }
   if (b.dataset.action === 'import-rows') window.ChagogImport?.open(tab);
   if (b.dataset.action === 'reset-filters') { search = ''; filter = ''; extra = noExtra(); render(); }
   if (b.dataset.action === 'import') $('file').click();
