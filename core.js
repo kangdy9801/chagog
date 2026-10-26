@@ -78,6 +78,6 @@
     return { used, carry, remaining: amount - used - carry };
   }
 
-  const api = { version: '2026.10.22-4', net, period, sum, special, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor, shiftDate };
+  const api = { version: '2026.10.22-5', net, period, sum, special, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor, shiftDate };
   if (typeof module !== 'undefined') module.exports = api; else root.Ledger = api;
 })(typeof window !== 'undefined' ? window : globalThis);
