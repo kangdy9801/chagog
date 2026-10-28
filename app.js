@@ -23,7 +23,9 @@ const colors = ['#38785d', '#a8c78b', '#e4ae96', '#8bacb1', '#c7bd90', '#b6a2bb'
 const navs = [['dashboard', '▦', '대시보드'], ['transactions', '↗', '변동지출'], ['cards', '▤', '카드·계좌 예산'], ['details', '◷', '세부지출내역'], ['fixed', '▣', '고정지출'], ['income', '↓', '수입 관리']];
 const NA = '<span class="na">NA</span>';
 const monthLabel = k => `${k.slice(0, 4)}년 ${Number(k.slice(5))}월`;
-function nowKey() { const d = new Date(); return period(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`, day()); }
+// 오늘 날짜(YYYY-MM-DD, 로컬 시간 기준)
+function todayStr() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
+function nowKey() { return period(todayStr(), day()); }
 const monthStats = k => stats(data, k, day(), nowKey());
 const yearKeys = () => Array.from({ length: 12 }, (_, i) => `${key().slice(0, 4)}-${pad(i + 1)}`);
 // 변동지출 중 아직 비어 있는 칸(NA)이 있는 기록
@@ -532,6 +534,7 @@ function openForm(id = null, type = tab, prefill = {}) {
   row = row || { ...prefill };
   const tx = type === 'transactions';
   $('dialogTitle').textContent = (id ? '수정' : '추가') + ' · ' + ({ transactions: '변동지출', fixed: '고정지출', income: '수입', cards: '계좌 예산' }[type]);
+  // 변동지출을 새로 추가할 때는 날짜 기본값이 오늘
   // 변동지출은 날짜 외에 모두 비워 둘 수 있음(NA) → 나중에 수정해서 채우기
   const f = (name, label, t = 'text', v = '', { list = '', required = false, placeholder = '' } = {}) =>
     `<label>${label}<input name="${name}" type="${t}" value="${esc(v)}" ${required ? 'required' : ''} ${t === 'number' ? 'min="0" step="1"' : ''} ${list ? `list="${list}"` : ''} ${placeholder ? `placeholder="${placeholder}"` : ''}></label>`;
@@ -539,7 +542,7 @@ function openForm(id = null, type = tab, prefill = {}) {
   let fields = '';
   if (type === 'cards') fields = f('account', '계좌명', 'text', row.account || '', { required: true }) + f('amount', '배정 예산', 'number', row.amount ?? 0, { required: true });
   else {
-    fields = f('date', '날짜', 'date', row.date || `${key()}-${pad(day())}`, { required: true })
+    fields = f('date', '날짜', 'date', row.date || (tx ? todayStr() : `${key()}-${pad(day())}`), { required: true })
       + f('category', '구분', 'text', row.category || '', { list: 'categories', required: !tx, ...opt })
       + f('detail', '세부 내역', 'text', row.detail || '', opt)
       + f('amount', tx ? '결제 금액' : '금액', 'number', id ? (row.amount ?? '') : (tx ? '' : 0), { required: !tx, ...opt });
