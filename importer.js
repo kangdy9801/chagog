@@ -119,7 +119,7 @@
       if (date === '') { date = defaultDate; inferred = true; }
       const amount = parseMoney(get('amount')), discount = parseMoney(get('discount')), net = parseMoney(get('net'));
       if ([amount, discount, net].some(Number.isNaN)) return fail('금액을 숫자로 읽을 수 없어요');
-      const rec = { date, category: text('category'), detail: text('detail'), card: text('card'), note: text('note') };
+      const rec = { date, category: text('category'), detail: text('detail'), card: ({ 올윈: '올원', 올인: '올원' })[text('card')] || text('card'), note: text('note') };
       if (type === 'transactions') {
         rec.amount = amount ?? (net != null ? net + (discount || 0) : null);   // 비어 있으면 NA
         rec.discount = discount ?? (rec.amount != null && net != null ? Math.max(0, rec.amount - net) : 0);

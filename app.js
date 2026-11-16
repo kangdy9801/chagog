@@ -14,6 +14,17 @@ const NA_FILTER = '__NA__';
 // 계좌 구분 '기타' = 출장비·부수입 같은 수입으로 따로 충당하는 지출
 // → 세부 지출 내역의 분류 합계에서 빠지고, 카드·계좌 예산에서는 '기타' 계좌로 수입과 맞춰 봄
 const SIDE_ACCOUNT = '기타';
+// 출장비·부수입(계좌 기타)을 다른 계좌로 옮겨 쓴 금액 · 그 달에만 적용(다음 달로 이어지지 않음)
+// data.sideMoves = { 'YYYY-MM': { 국민: 100000, ... } }
+const sideMovesFor = k => data.sideMoves?.[k] || {};
+/** 계좌별로 더해지는 출장비·부수입 = 기타는 (부수입 − 옮긴 금액), 다른 계좌는 옮겨 받은 금액 */
+function sideShare(k, sideIn) {
+  const moves = sideMovesFor(k), moved = Object.values(moves).reduce((a, v) => a + Number(v || 0), 0);
+  return { moves, moved, of: acc => (acc === SIDE_ACCOUNT ? sideIn - moved : Number(moves[acc] || 0)) };
+}
+// 카드 이름 통일: 올윈·올인 → 올원
+const CARD_ALIAS = { 올윈: '올원', 올인: '올원' };
+const cardName = v => (typeof v === 'string' && CARD_ALIAS[v.trim()]) || v;
 
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const pad = n => String(n).padStart(2, '0');
@@ -144,9 +155,9 @@ function accountHealth(st, k) {
   const budgets = budgetsFor(data, k).list, sideIn = sum(st.income.filter(t => t.account === SIDE_ACCOUNT));
   const rows = budgets.map(x => ({ account: x.account, amount: Number(x.amount || 0) }));
   if (sideIn && !rows.some(r => r.account === SIDE_ACCOUNT)) rows.push({ account: SIDE_ACCOUNT, amount: 0 });
-  const allocated = sum(budgets, x => Number(x.amount || 0)), mainIncome = sum(st.income) - sideIn;
+  const allocated = sum(budgets, x => Number(x.amount || 0)), mainIncome = sum(st.income) - sideIn, share = sideShare(k, sideIn);
   return {
-    rows: rows.map(r => { const b = budgetStats(st.tx, r.account, r.amount), money = r.amount + (r.account === SIDE_ACCOUNT ? sideIn : 0); return { ...r, money, spent: b.used + b.carry, remaining: money - b.used - b.carry }; }),
+    rows: rows.map(r => { const b = budgetStats(st.tx, r.account, r.amount), money = r.amount + share.of(r.account); return { ...r, money, spent: b.used + b.carry, remaining: money - b.used - b.carry }; }),
     leftover: mainIncome - allocated - st.fixedTotal, mainIncome,
   };
 }
@@ -239,6 +250,13 @@ function renderList(s, nav) {
     const p = fixedParts(all);
     cards += FIXED_PARTS.map(k => metric(k, p[k], k === '주식' && p['그 외'] ? `그 외 고정지출 ${won(p['그 외'])}` : '고정지출 · 그래프 제외')).join('');
   } else {
+    if (tab === 'income') {
+      // 급여 외 수입(출장비·부수입·용돈·이자·환급 등) 합계
+      const pay = all.filter(t => t.category === '급여'), extraRows = all.filter(t => t.category !== '급여');
+      const byCat = groups(extraRows).map(([c, n]) => `${esc(c)} ${won(n)}`).join(' · ');
+      cards += metric('급여', sum(pay), pay.length + '건');
+      cards += metric('급여 외 부수입 합계', sum(extraRows), byCat || '아직 없음');
+    }
     cards += metric('현재 조회 합계', sum(rows), rows.length + '건');
     if (tab === 'transactions') cards += metric('할인 및 엔빵', sum(rows, t => +t.discount || 0), '실지출에서 자동 차감');
   }
@@ -287,7 +305,7 @@ function renderCards(s) {
   // 월급 등 수입(예: 농협 입금)은 국민·CMA·농협 예산으로 나눠 쓰는 돈 → 예산 배분 확인에만 사용
   // 계좌 구분을 '기타'로 넣은 수입(출장비·부수입)만 '기타' 계좌의 쓸 수 있는 돈으로 더함
   const side = s.income.filter(t => t.account === SIDE_ACCOUNT), sideIn = sum(side);
-  const incomeIn = acc => (acc === SIDE_ACCOUNT ? sideIn : 0);
+  const share = sideShare(key(), sideIn), incomeIn = share.of;
   const incomeOnly = side.length && !budgets.some(x => x.account === SIDE_ACCOUNT) ? [SIDE_ACCOUNT] : [];
   const mainIncome = sum(s.income) - sideIn, allocated = sum(budgets, x => Number(x.amount || 0));
   // 남는 금액(용돈) = 수입 − 계좌 예산 배정 − 고정지출(모임·적금·주식 등)
@@ -295,18 +313,21 @@ function renderCards(s) {
   const known = acc => budgets.some(x => x.account === acc) || incomeOnly.includes(acc);
   const missing = s.tx.filter(t => !known(t.account));
   let html = `<div class="cards">${metric('이번 달 수입', mainIncome, sideIn ? `출장비·부수입 ${won(sideIn)} 제외` : '출장비·부수입(계좌 기타) 제외')}${metric('계좌 예산 배정', allocated, budgets.map(x => `${esc(x.account)} ${won(x.amount)}`).join(' · ') || '아직 배정 없음')}${metric('고정지출', s.fixedTotal, fixedPartsText(fixedParts(s.fixed)))}${metric(leftover < 0 ? '부족한 금액' : '남는 금액 · 용돈', Math.abs(leftover), leftover < 0 ? '수입보다 배정·고정지출이 많아요' : '수입 − 계좌 예산 − 고정지출', true)}</div>`;
-  html += `<div class="notice">월급처럼 들어온 수입을 <b>계좌별 예산으로 나눠</b> 관리합니다. 사용 금액은 지출의 <b>계좌 구분</b>으로 합산하고, 이월·기타는 거래의 분류를 기준으로 자동 계산하며, 전월 잔여 예산을 자동으로 더하지 않습니다. 출장비·부수입은 수입에서 <b>계좌 구분을 ‘기타’</b>로 넣으면 기타 계좌의 쓸 수 있는 돈으로 잡혀요.</div>`;
+  html += `<div class="notice">월급처럼 들어온 수입을 <b>계좌별 예산으로 나눠</b> 관리합니다. 사용 금액은 지출의 <b>계좌 구분</b>으로 합산하고, 이월·기타는 거래의 분류를 기준으로 자동 계산하며, 전월 잔여 예산을 자동으로 더하지 않습니다. 출장비·부수입은 수입에서 <b>계좌 구분을 ‘기타’</b>로 넣으면 기타 계좌의 쓸 수 있는 돈으로 잡히고, 기타 행의 <b>부수입 옮기기</b>로 다른 계좌에 나눠 쓸 수 있어요(그 달에만 적용).</div>`;
   if (!b.own && b.from) html += `<div class="notice"><b>${monthLabel(b.from)}</b> 예산을 이 달에도 그대로 적용하고 있어요. 수정·삭제·추가하면 이 달부터 바뀐 예산이 적용되고 다음 달에도 이어져요.</div>`;
   else if (b.own && budgets.length) html += `<div class="notice">이 달 예산은 다음 달에도 그대로 이어서 적용돼요. 바뀌는 달에만 그 달에서 수정하면 돼요.</div>`;
   const later = laterBudgetMonth();
   if (!b.own && !b.from) html += `<div class="notice">이 달에는 아직 계좌 예산이 없어요. 예산은 입력한 달부터 <b>다음 달로</b> 이어지기 때문에, 그보다 앞선 달은 비어 있어요.${later ? ` <button data-action="copy-budgets">${monthLabel(later)} 예산 그대로 가져오기</button>` : ''} 오른쪽 위 <b>＋ 계좌 예산</b>으로 직접 추가해도 돼요.</div>`;
   const row = (account, amount, manage) => {
     const r = budgetStats(s.tx, account, amount), inc = incomeIn(account), remaining = r.remaining + inc;
-    return `<tr><td><b>${esc(account)}</b></td><td>${won(amount)}</td><td>${inc ? won(inc) : '<span class="muted">-</span>'}</td><td>${won(r.used)}</td><td>${won(r.carry)}</td><td class="${remaining < 0 ? 'negative' : ''}"><b>${won(remaining)}</b></td><td>${manage}</td></tr>`;
+    const incText = account === SIDE_ACCOUNT && share.moved ? `${won(inc)}<br><small class="muted">${won(sideIn)} 중 ${won(share.moved)} 옮김</small>`
+      : inc ? `${won(inc)}${account !== SIDE_ACCOUNT ? '<br><small class="muted">기타에서 옮김</small>' : ''}` : '<span class="muted">-</span>';
+    return `<tr><td><b>${esc(account)}</b></td><td>${won(amount)}</td><td>${incText}</td><td>${won(r.used)}</td><td>${won(r.carry)}</td><td class="${remaining < 0 ? 'negative' : ''}"><b>${won(remaining)}</b></td><td>${manage}</td></tr>`;
   };
+  const moveBtn = acc => (acc === SIDE_ACCOUNT && (sideIn || share.moved) ? `<button data-action="side-move">부수입 옮기기</button>` : '');
   html += panel('카드·계좌별 예산', table(['계좌 / 결제수단', '배정 예산', '출장비·부수입', '이번 달 사용', '이월·기타', '잔여 예산', '관리'],
-    budgets.map(x => row(x.account, x.amount, `<button data-edit="${esc(x.id)}">수정</button><button data-delete="${esc(x.id)}">삭제</button>`)).join('')
-    + incomeOnly.map(a => row(a, 0, `<button data-add-budget="${esc(a)}">수정</button>`)).join('')),
+    budgets.map(x => row(x.account, x.amount, `<button data-edit="${esc(x.id)}">수정</button><button data-delete="${esc(x.id)}">삭제</button>${moveBtn(x.account)}`)).join('')
+    + incomeOnly.map(a => row(a, 0, `<button data-add-budget="${esc(a)}">수정</button>${moveBtn(a)}`)).join('')),
   '잔여 예산 = 배정 예산 − 이번 달 사용 − 이월·기타 · 기타 계좌는 출장비·부수입을 더해 계산');
   if (missing.length) html += `<div class="notice">예산에 연결되지 않은 거래 ${missing.length}건 · ${won(sum(missing))}. 거래의 계좌 구분을 수정하거나 해당 계좌의 예산을 추가해 주세요.</div>`;
   html += panel('실제 카드별 사용 내역', table(['카드', '건수', '실지출'], [...new Set(s.tx.map(t => t.card || ''))].map(c => {
@@ -522,7 +543,19 @@ function openNoteForm() {
   $('formError').textContent = '';
   $('dialog').showModal();
 }
+function openSideMoveForm() {
+  editing = { id: null, type: 'side-move' };
+  const k = key(), sideIn = sum(monthStats(k).income.filter(t => t.account === SIDE_ACCOUNT)), moves = sideMovesFor(k);
+  const accounts = [...new Set([...budgetsFor(data, k).list.map(b => b.account), ...Object.keys(moves)])].filter(a => a !== SIDE_ACCOUNT);
+  $('dialogTitle').textContent = `부수입 옮기기 · ${monthLabel(k)}`;
+  $('fields').innerHTML = `<p class="muted wide" style="grid-column:1/-1">이 달 출장비·부수입(계좌 기타) <b>${won(sideIn)}</b> 중 다른 계좌로 옮겨 쓸 금액을 넣어 주세요. 남은 금액은 기타 계좌에 그대로 남아요. 이 달에만 적용돼요.</p>`
+    + (accounts.map(a => `<label>${esc(a)}<input name="mv:${esc(a)}" type="number" min="0" step="1" value="${Number(moves[a] || 0)}"></label>`).join('')
+      || '<p class="muted" style="grid-column:1/-1">옮길 계좌 예산이 없어요. 먼저 ＋ 계좌 예산으로 계좌를 추가해 주세요.</p>');
+  $('formError').textContent = '';
+  $('dialog').showModal();
+}
 function openForm(id = null, type = tab, prefill = {}) {
+  if (type === 'side-move') return openSideMoveForm();
   if (type === 'deposit') return openDepositForm();
   if (type === 'note') return openNoteForm();
   if (!['transactions', 'fixed', 'income', 'cards'].includes(type)) type = 'transactions';
@@ -578,7 +611,19 @@ $('form').onsubmit = e => {
     save(); $('dialog').close(); render(); toast('입금 금액을 저장했어요. 다음 달에도 이어서 적용돼요.');
     return;
   }
+  if (type === 'side-move') {
+    const next = {}, sideIn = sum(monthStats(key()).income.filter(t => t.account === SIDE_ACCOUNT));
+    if (Object.values(values).some(v => v !== '' && (!Number.isFinite(+v) || +v < 0))) return void ($('formError').textContent = '옮길 금액은 0 이상의 숫자로 입력해 주세요.');
+    for (const [k, v] of Object.entries(values)) if (k.startsWith('mv:') && +v > 0) next[k.slice(3)] = Math.round(+v);
+    const total = Object.values(next).reduce((a, v) => a + v, 0);
+    if (total > sideIn) return void ($('formError').textContent = `옮길 금액 합계(${won(total)})가 이 달 출장비·부수입(${won(sideIn)})보다 많아요.`);
+    data.sideMoves ??= {};
+    if (total) data.sideMoves[key()] = next; else delete data.sideMoves[key()];
+    save(); $('dialog').close(); render(); toast(total ? `부수입 ${won(total)}을 옮겼어요.` : '옮긴 금액을 모두 되돌렸어요.');
+    return;
+  }
   for (const k of ['category', 'account', 'detail', 'card', 'note']) if (k in values) values[k] = values[k].trim();
+  if (values.card) values.card = cardName(values.card);
   if ('amount' in values) values.amount = values.amount === '' ? (tx ? null : 0) : +values.amount;
   if ('discount' in values) values.discount = values.discount === '' ? 0 : +values.discount;
   if (type === 'cards' && !values.account) return void ($('formError').textContent = '계좌명은 공백일 수 없습니다.');
@@ -628,6 +673,7 @@ $('content').onclick = e => {
   }
   if (b.dataset.action === 'show-na') { filter = NA_FILTER; render(); }
   if (b.dataset.action === 'deposit') openForm(null, 'deposit');
+  if (b.dataset.action === 'side-move') openForm(null, 'side-move');
   if (b.dataset.addBudget) openForm(null, 'cards', { account: b.dataset.addBudget });
   if (b.dataset.action === 'copy-budgets') {
     const from = laterBudgetMonth();
@@ -676,6 +722,7 @@ function validate(d) {
       ids.add(t.id);
       for (const f of ['detail', 'card', 'note', 'account']) if (t[f] != null && typeof t[f] !== 'string') throw Error('문자 필드 형식이 잘못되었습니다.');
       delete t.reimburse;   // 예전 버전의 '환급 예정' 표시는 더 이상 쓰지 않음
+      if (t.card) t.card = cardName(t.card);   // 올윈·올인 → 올원
     }
   }
   for (const [k, rows] of Object.entries(d.budgets)) {
@@ -691,6 +738,7 @@ function validate(d) {
   }
   if (d.notes == null) d.notes = {};
   if (typeof d.notes !== 'object' || Array.isArray(d.notes) || Object.entries(d.notes).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || typeof v !== 'string' || v.length > 3000)) throw Error('월별 메모 형식 오류');
+  if (d.sideMoves != null && (typeof d.sideMoves !== 'object' || Array.isArray(d.sideMoves) || Object.entries(d.sideMoves).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || !v || typeof v !== 'object' || Array.isArray(v) || Object.values(v).some(n => !Number.isFinite(n) || n < 0)))) throw Error('부수입 옮기기 형식 오류');
   if (d.fixedMonths == null) d.fixedMonths = {};
   if (typeof d.fixedMonths !== 'object' || Array.isArray(d.fixedMonths) || Object.entries(d.fixedMonths).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || typeof v !== 'boolean')) throw Error('고정지출 월 정보 오류');
   return d;
