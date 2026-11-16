@@ -306,7 +306,7 @@ function renderCards(s) {
   };
   html += panel('카드·계좌별 예산', table(['계좌 / 결제수단', '배정 예산', '출장비·부수입', '이번 달 사용', '이월·기타', '잔여 예산', '관리'],
     budgets.map(x => row(x.account, x.amount, `<button data-edit="${esc(x.id)}">수정</button><button data-delete="${esc(x.id)}">삭제</button>`)).join('')
-    + incomeOnly.map(a => row(a, 0, '<span class="muted">출장비·부수입으로 충당</span>')).join('')),
+    + incomeOnly.map(a => row(a, 0, `<button data-add-budget="${esc(a)}">수정</button>`)).join('')),
   '잔여 예산 = 배정 예산 − 이번 달 사용 − 이월·기타 · 기타 계좌는 출장비·부수입을 더해 계산');
   if (missing.length) html += `<div class="notice">예산에 연결되지 않은 거래 ${missing.length}건 · ${won(sum(missing))}. 거래의 계좌 구분을 수정하거나 해당 계좌의 예산을 추가해 주세요.</div>`;
   html += panel('실제 카드별 사용 내역', table(['카드', '건수', '실지출'], [...new Set(s.tx.map(t => t.card || ''))].map(c => {
