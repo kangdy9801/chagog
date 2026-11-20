@@ -1,7 +1,7 @@
-const APP_VERSION = '2026.10.22-5';   // core.js · importer.js 와 같은 값이어야 함
+const APP_VERSION = '2026.11.20-1';   // core.js · importer.js 와 같은 값이어야 함
 const $ = id => document.getElementById(id);
-const { net, period, sum, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor } = Ledger;
-const blank = () => ({ version: 1, transactions: [], fixed: [], income: [], budgets: {}, categoryBudgets: {}, fixedMonths: {}, notes: {}, cycleDay: 21 });
+const { net, period, periodRange, addDays, isDate, sum, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor, transferNet } = Ledger;
+const blank = () => ({ version: 1, transactions: [], fixed: [], income: [], budgets: {}, categoryBudgets: {}, fixedMonths: {}, notes: {}, periodStarts: {}, budgetTransfers: {}, cycleDay: 21 });
 let data = blank(), tab = 'dashboard', mode = 'month', search = '', filter = '', editing = null;
 // 변동지출 내역 추가 필터 (카드 · 계좌 · 날짜 범위 · 금액 범위 · 정렬)
 const noExtra = () => ({ card: '', account: '', from: '', to: '', min: '', max: '', sort: 'date-desc' });
@@ -22,6 +22,18 @@ function sideShare(k, sideIn) {
   const moves = sideMovesFor(k), moved = Object.values(moves).reduce((a, v) => a + Number(v || 0), 0);
   return { moves, moved, of: acc => (acc === SIDE_ACCOUNT ? sideIn - moved : Number(moves[acc] || 0)) };
 }
+/** 이체를 수정·삭제하더라도 수신 예산을 다시 보내 사용한 계좌가 음수가 되지 않도록 확인. */
+function negativeTransferAccount(k, rows) {
+  const sideIn = sum(monthStats(k).income.filter(t => t.account === SIDE_ACCOUNT));
+  const share = sideShare(k, sideIn), budgetList = budgetsFor(data, k).list;
+  const accounts = new Set(rows.flatMap(t => [t.from, t.to]));
+  for (const account of accounts) {
+    const budget = Number(budgetList.find(b => b.account === account)?.amount || 0);
+    const moved = rows.reduce((n, t) => n + (t.to === account ? t.amount : 0) - (t.from === account ? t.amount : 0), 0);
+    if (budget + share.of(account) + moved < 0) return account;
+  }
+  return null;
+}
 // 카드 이름 통일: 올윈·올인 → 올원
 const CARD_ALIAS = { 올윈: '올원', 올인: '올원' };
 const cardName = v => (typeof v === 'string' && CARD_ALIAS[v.trim()]) || v;
@@ -35,8 +47,13 @@ const navs = [['dashboard', '▦', '대시보드'], ['transactions', '↗', '변
 const NA = '<span class="na">NA</span>';
 const monthLabel = k => `${k.slice(0, 4)}년 ${Number(k.slice(5))}월`;
 // 오늘 날짜(YYYY-MM-DD, 로컬 시간 기준)
-function todayStr() { const d = new Date(); return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
-function nowKey() { return period(todayStr(), day()); }
+function todayStr() {
+  const fields = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Seoul', year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(new Date()).map(p => [p.type, p.value]));
+  return `${fields.year}-${fields.month}-${fields.day}`;
+}
+function nowKey() { return period(todayStr(), day(), data.periodStarts); }
+const bounds = k => periodRange(k, day(), data.periodStarts);
 const monthStats = k => stats(data, k, day(), nowKey());
 const yearKeys = () => Array.from({ length: 12 }, (_, i) => `${key().slice(0, 4)}-${pad(i + 1)}`);
 // 변동지출 중 아직 비어 있는 칸(NA)이 있는 기록
@@ -48,8 +65,8 @@ $('basis').value = data.cycleDay || 21;
 function toast(t) { $('toast').textContent = t; $('toast').style.display = 'block'; setTimeout(() => { $('toast').style.display = 'none'; }, 2500); }
 function save() { return window.CloudLedger?.save() || false; }
 function range(k) {
-  const [y, m] = k.split('-').map(Number), end = day() === 1 ? new Date(y, m, 0) : new Date(y, m, 20);
-  return `${y}.${pad(m)}.${pad(day())} – ${end.getFullYear()}.${pad(end.getMonth() + 1)}.${pad(end.getDate())}`;
+  const b = bounds(k);
+  return `${b.start.replaceAll('-', '.')} – ${b.end.replaceAll('-', '.')}`;
 }
 function panel(title, body, sub = '', action = '') { return `<section class="panel"><div class="panel-head"><div><h2>${title}</h2><p>${sub}</p></div>${action}</div>${body}</section>`; }
 function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(x => `<th>${x}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">아직 기록이 없어요. 첫 내역을 추가해 보세요.</td></tr>`}</tbody></table></div>`; }
@@ -126,12 +143,11 @@ function annualTable() {
 // ---------- 대시보드: 이번 달 한눈에 ----------
 /** 집계 기간 안에서 얼마나 지났는지 (0~1), 남은 일수 */
 function periodPace(k) {
-  const now = nowKey();
-  if (k < now) return { pace: 1, left: 0, done: true };
-  if (k > now) return { pace: 0, left: null, done: false };
-  const [y, m] = k.split('-').map(Number), start = new Date(y, m - 1, day()), end = new Date(y, m, day());
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const total = Math.round((end - start) / 864e5), passed = Math.round((today - start) / 864e5) + 1;
+  const { start, end } = bounds(k), today = todayStr();
+  if (today > end) return { pace: 1, left: 0, done: true };
+  if (today < start) return { pace: 0, left: null, done: false };
+  const d = date => Date.parse(`${date}T00:00:00Z`), total = Math.round((d(end) - d(start)) / 864e5) + 1;
+  const passed = Math.round((d(today) - d(start)) / 864e5) + 1;
   return { pace: Math.min(1, passed / total), left: Math.max(0, total - passed), done: false };
 }
 /** 분류별: 이번 달 사용(계좌 기타 제외) · 입금 금액(예산) · 평소(최근 12개월 평균) · 상태 */
@@ -153,11 +169,18 @@ function categoryHealth(k) {
 /** 계좌별 잔액 (카드·계좌 예산과 같은 계산) */
 function accountHealth(st, k) {
   const budgets = budgetsFor(data, k).list, sideIn = sum(st.income.filter(t => t.account === SIDE_ACCOUNT));
-  const rows = budgets.map(x => ({ account: x.account, amount: Number(x.amount || 0) }));
-  if (sideIn && !rows.some(r => r.account === SIDE_ACCOUNT)) rows.push({ account: SIDE_ACCOUNT, amount: 0 });
-  const allocated = sum(budgets, x => Number(x.amount || 0)), mainIncome = sum(st.income) - sideIn, share = sideShare(k, sideIn);
+  const transfers = data.budgetTransfers?.[k] || [], share = sideShare(k, sideIn);
+  const accounts = [...new Set([...budgets.map(x => x.account),
+    ...(sideIn || share.moved ? [SIDE_ACCOUNT] : []), ...Object.keys(share.moves),
+    ...transfers.flatMap(t => [t.from, t.to])])];
+  const allocated = sum(budgets, x => Number(x.amount || 0)), mainIncome = sum(st.income) - sideIn;
   return {
-    rows: rows.map(r => { const b = budgetStats(st.tx, r.account, r.amount), money = r.amount + share.of(r.account); return { ...r, money, spent: b.used + b.carry, remaining: money - b.used - b.carry }; }),
+    rows: accounts.map(account => {
+      const amount = Number(budgets.find(x => x.account === account)?.amount || 0);
+      const b = budgetStats(st.tx, account, amount);
+      const available = amount + share.of(account) + transferNet(data, k, account);
+      return { account, amount, money: available, spent: b.used + b.carry, remaining: available - b.used - b.carry };
+    }),
     leftover: mainIncome - allocated - st.fixedTotal, mainIncome,
   };
 }
@@ -180,7 +203,7 @@ function adviceLine(k) {
   }
   return { tone: over.length || minus.length || acc.leftover < 0 ? 'bad' : warn.length ? 'warn' : 'good', text: parts.join(' · ') + '.' };
 }
-/** 지난달 돌아보기 (새 달이 시작되는 21일부터 자동으로 지난달 기준) */
+/** 지난달 돌아보기 (새 가계부 기간이 시작되면 자동으로 지난 기간 기준) */
 function reviewLine(k) {
   const prev = addMonths(k, -1), cur = monthCats(prev);
   if (!cur.has) return '';
@@ -207,7 +230,7 @@ function glancePanel(s) {
     + `<div class="glance-grid"><div><h3>분류별 예산 사용</h3><p class="muted">세부지출내역의 입금 금액 기준 · 세로선은 지금까지 지난 기간</p>${catRows}</div>`
     + `<div><h3>계좌별 잔액</h3><p class="muted">카드·계좌 예산 기준</p>${accRows}<div class="g-left ${acc.leftover < 0 ? 'negative' : ''}">${acc.leftover < 0 ? '부족한 금액' : '남는 금액 · 용돈'} <b>${won(Math.abs(acc.leftover))}</b><small>수입 − 계좌 예산 − 고정지출</small></div></div></div>`
     + `<div class="memo"><div class="memo-head"><h3>📝 ${Number(k.slice(5))}월 특이사항</h3><button data-action="note">${note ? '메모 수정' : '메모 쓰기'}</button></div>`
-    + `${note ? `<p class="memo-text">${esc(note).replace(/\n/g, '<br>')}</p>` : `<p class="muted">매달 21일 새 달이 시작되면 지난달을 돌아보며 이번 달 특이사항을 적어 두세요.</p>`}`
+    + `${note ? `<p class="memo-text">${esc(note).replace(/\n/g, '<br>')}</p>` : `<p class="muted">새 가계부 기간이 시작되면 지난 기간을 돌아보며 이번 기간의 특이사항을 적어 두세요.</p>`}`
     + `${review ? `<p class="review">↩ 지난달 돌아보기 · ${esc(review)}</p>` : ''}</div></section>`;
 }
 
@@ -301,34 +324,37 @@ function laterBudgetMonth() {
   return Object.keys(data.budgets).filter(k => k > key() && Array.isArray(data.budgets[k]) && data.budgets[k].length).sort()[0] || null;
 }
 function renderCards(s) {
-  const b = budgetsFor(data, key()), budgets = b.list;
-  // 월급 등 수입(예: 농협 입금)은 국민·CMA·농협 예산으로 나눠 쓰는 돈 → 예산 배분 확인에만 사용
-  // 계좌 구분을 '기타'로 넣은 수입(출장비·부수입)만 '기타' 계좌의 쓸 수 있는 돈으로 더함
+  const k = key(), b = budgetsFor(data, k), budgets = b.list;
   const side = s.income.filter(t => t.account === SIDE_ACCOUNT), sideIn = sum(side);
-  const share = sideShare(key(), sideIn), incomeIn = share.of;
-  const incomeOnly = side.length && !budgets.some(x => x.account === SIDE_ACCOUNT) ? [SIDE_ACCOUNT] : [];
+  const share = sideShare(k, sideIn), transfers = data.budgetTransfers?.[k] || [];
   const mainIncome = sum(s.income) - sideIn, allocated = sum(budgets, x => Number(x.amount || 0));
-  // 남는 금액(용돈) = 수입 − 계좌 예산 배정 − 고정지출(모임·적금·주식 등)
   const leftover = mainIncome - allocated - s.fixedTotal;
-  const known = acc => budgets.some(x => x.account === acc) || incomeOnly.includes(acc);
-  const missing = s.tx.filter(t => !known(t.account));
+  const accountNames = [...new Set([...budgets.map(x => x.account),
+    ...(sideIn || share.moved ? [SIDE_ACCOUNT] : []), ...Object.keys(share.moves),
+    ...transfers.flatMap(t => [t.from, t.to])])];
+  const known = new Set(accountNames), missing = s.tx.filter(t => !known.has(t.account));
   let html = `<div class="cards">${metric('이번 달 수입', mainIncome, sideIn ? `출장비·부수입 ${won(sideIn)} 제외` : '출장비·부수입(계좌 기타) 제외')}${metric('계좌 예산 배정', allocated, budgets.map(x => `${esc(x.account)} ${won(x.amount)}`).join(' · ') || '아직 배정 없음')}${metric('고정지출', s.fixedTotal, fixedPartsText(fixedParts(s.fixed)))}${metric(leftover < 0 ? '부족한 금액' : '남는 금액 · 용돈', Math.abs(leftover), leftover < 0 ? '수입보다 배정·고정지출이 많아요' : '수입 − 계좌 예산 − 고정지출', true)}</div>`;
-  html += `<div class="notice">월급처럼 들어온 수입을 <b>계좌별 예산으로 나눠</b> 관리합니다. 사용 금액은 지출의 <b>계좌 구분</b>으로 합산하고, 이월·기타는 거래의 분류를 기준으로 자동 계산하며, 전월 잔여 예산을 자동으로 더하지 않습니다. 출장비·부수입은 수입에서 <b>계좌 구분을 ‘기타’</b>로 넣으면 기타 계좌의 쓸 수 있는 돈으로 잡히고, 기타 행의 <b>부수입 옮기기</b>로 다른 계좌에 나눠 쓸 수 있어요(그 달에만 적용).</div>`;
-  if (!b.own && b.from) html += `<div class="notice"><b>${monthLabel(b.from)}</b> 예산을 이 달에도 그대로 적용하고 있어요. 수정·삭제·추가하면 이 달부터 바뀐 예산이 적용되고 다음 달에도 이어져요.</div>`;
-  else if (b.own && budgets.length) html += `<div class="notice">이 달 예산은 다음 달에도 그대로 이어서 적용돼요. 바뀌는 달에만 그 달에서 수정하면 돼요.</div>`;
+  html += `<div class="notice">최초 <b>배정 예산은 변경하지 않고</b>, <b>계좌 간 이체</b>로 쓸 수 있는 예산만 이동할 수 있어요. 이체는 가계부 내부의 수동 기록이며 실제 은행 송금은 하지 않습니다. 이체 금액은 수입·지출이나 남는 금액(용돈)에 중복 합산하지 않고 <b>이체 후 예산</b>과 잔여 예산에 반영돼요. 출장비·부수입(계좌 기타)을 옮기는 기존 기능도 유지됩니다.</div>`;
+  if (!b.own && b.from) html += `<div class="notice"><b>${monthLabel(b.from)}</b> 배정 예산을 이 달에도 그대로 적용하고 있어요. 예산을 수정하면 이 달부터 다음 달에도 적용되지만, 계좌 간 이체는 <b>현재 기간에만</b> 적용됩니다.</div>`;
+  else if (b.own && budgets.length) html += `<div class="notice">이 달의 배정 예산은 다음 달에도 그대로 이어집니다. 계좌 간 이체 내역은 다음 달로 이월되지 않습니다.</div>`;
   const later = laterBudgetMonth();
-  if (!b.own && !b.from) html += `<div class="notice">이 달에는 아직 계좌 예산이 없어요. 예산은 입력한 달부터 <b>다음 달로</b> 이어지기 때문에, 그보다 앞선 달은 비어 있어요.${later ? ` <button data-action="copy-budgets">${monthLabel(later)} 예산 그대로 가져오기</button>` : ''} 오른쪽 위 <b>＋ 계좌 예산</b>으로 직접 추가해도 돼요.</div>`;
-  const row = (account, amount, manage) => {
-    const r = budgetStats(s.tx, account, amount), inc = incomeIn(account), remaining = r.remaining + inc;
-    const incText = account === SIDE_ACCOUNT && share.moved ? `${won(inc)}<br><small class="muted">${won(sideIn)} 중 ${won(share.moved)} 옮김</small>`
-      : inc ? `${won(inc)}${account !== SIDE_ACCOUNT ? '<br><small class="muted">기타에서 옮김</small>' : ''}` : '<span class="muted">-</span>';
-    return `<tr><td><b>${esc(account)}</b></td><td>${won(amount)}</td><td>${incText}</td><td>${won(r.used)}</td><td>${won(r.carry)}</td><td class="${remaining < 0 ? 'negative' : ''}"><b>${won(remaining)}</b></td><td>${manage}</td></tr>`;
-  };
-  const moveBtn = acc => (acc === SIDE_ACCOUNT && (sideIn || share.moved) ? `<button data-action="side-move">부수입 옮기기</button>` : '');
-  html += panel('카드·계좌별 예산', table(['계좌 / 결제수단', '배정 예산', '출장비·부수입', '이번 달 사용', '이월·기타', '잔여 예산', '관리'],
-    budgets.map(x => row(x.account, x.amount, `<button data-edit="${esc(x.id)}">수정</button><button data-delete="${esc(x.id)}">삭제</button>${moveBtn(x.account)}`)).join('')
-    + incomeOnly.map(a => row(a, 0, `<button data-add-budget="${esc(a)}">수정</button>${moveBtn(a)}`)).join('')),
-  '잔여 예산 = 배정 예산 − 이번 달 사용 − 이월·기타 · 기타 계좌는 출장비·부수입을 더해 계산');
+  if (!b.own && !b.from) html += `<div class="notice">이 달에는 아직 계좌 예산이 없어요.${later ? ` <button data-action="copy-budgets">${monthLabel(later)} 예산 그대로 가져오기</button>` : ''} 위의 <b>＋ 계좌 예산</b>으로 추가할 수도 있어요.</div>`;
+  const rows = accountNames.map(account => {
+    const budget = budgets.find(x => x.account === account), amount = Number(budget?.amount || 0);
+    const r = budgetStats(s.tx, account, amount), inc = share.of(account), moved = transferNet(data, k, account);
+    const available = amount + inc + moved, remaining = available - r.used - r.carry;
+    const incomeText = account === SIDE_ACCOUNT && share.moved ? `${won(inc)}<small class="muted">${won(sideIn)} 중 ${won(share.moved)} 부수입 옮김</small>`
+      : inc ? `${won(inc)}${account !== SIDE_ACCOUNT ? '<small class="muted">기타에서 옮김</small>' : ''}` : '<span class="muted">-</span>';
+    const movedText = moved ? `<b class="${moved < 0 ? 'negative' : 'positive'}">${moved > 0 ? '+' : '−'}${won(Math.abs(moved))}</b>` : '<span class="muted">-</span>';
+    const manage = (budget ? `<button data-edit="${esc(budget.id)}">예산 수정</button><button data-delete="${esc(budget.id)}">삭제</button>` : `<button data-add-budget="${esc(account)}">예산 추가</button>`)
+      + `<button data-action="transfer-new" data-from="${esc(account)}">이체</button>`
+      + (account === SIDE_ACCOUNT && (sideIn || share.moved) ? '<button data-action="side-move">부수입 옮기기</button>' : '');
+    return `<tr><td><b>${esc(account)}</b></td><td>${won(amount)}</td><td class="income-cell">${incomeText}</td><td>${movedText}</td><td><b>${won(available)}</b></td><td>${won(r.used)}</td><td>${won(r.carry)}</td><td class="${remaining < 0 ? 'negative' : ''}"><b>${won(remaining)}</b></td><td>${manage}</td></tr>`;
+  }).join('');
+  html += panel('카드·계좌별 예산', table(['계좌 / 결제수단', '배정 예산', '출장비·부수입', '이체 (옮기기)', '이체 후 예산', '이번 달 사용', '이월·기타', '잔여 예산', '관리'], rows),
+    '잔여 예산 = 이체 후 예산 − 이번 달 사용 − 이월·기타', '<button class="primary" data-action="transfer-new">＋ 계좌 간 이체</button>');
+  if (transfers.length) html += panel('이번 기간 계좌 간 이체 기록', table(['보낸 계좌', '받은 계좌', '금액', '관리'], transfers.map(t => `<tr><td>${esc(t.from)}</td><td>${esc(t.to)}</td><td><b>${won(t.amount)}</b></td><td><button data-transfer-edit="${esc(t.id)}">수정</button><button data-transfer-delete="${esc(t.id)}">삭제</button></td></tr>`).join('')),
+    '이체는 선택한 기간에만 적용되며 배정 예산 총액은 바뀌지 않습니다.');
   if (missing.length) html += `<div class="notice">예산에 연결되지 않은 거래 ${missing.length}건 · ${won(sum(missing))}. 거래의 계좌 구분을 수정하거나 해당 계좌의 예산을 추가해 주세요.</div>`;
   html += panel('실제 카드별 사용 내역', table(['카드', '건수', '실지출'], [...new Set(s.tx.map(t => t.card || ''))].map(c => {
     const rows = s.tx.filter(t => (t.card || '') === c);
@@ -480,6 +506,9 @@ function render() {
   const nav = navs.find(n => n[0] === tab);
   $('title').textContent = nav[2];
   $('subtitle').textContent = tab === 'dashboard' ? '기록은 간단하게, 돈의 흐름은 한눈에.' : range(key()) + ' · 입력 즉시 모든 현황에 반영됩니다.';
+  $('periodSummary').textContent = `조회 기간 ${range(key())}`;
+  $('editPeriod').disabled = day() === 1;
+  $('editPeriod').title = day() === 1 ? '달력 월 기준에서는 시작·종료 날짜가 고정됩니다.' : '선택한 가계부 기간의 시작일과 종료일을 직접 설정합니다.';
   $('nav').innerHTML = navs.map(([id, icon, label]) => `<button data-tab="${id}" class="${id === tab ? 'active' : ''}">${icon}　${label}</button>`).join('');
   $('add').textContent = tab === 'cards' ? '＋ 계좌 예산' : tab === 'fixed' ? '＋ 고정지출' : tab === 'income' ? '＋ 수입 기록' : '＋ 지출 기록';
   let html = '';
@@ -526,6 +555,33 @@ const SUGGEST = {
   fixed: ['적금', '주식', '모임', '통신', '보험', '월세', '구독'],
   income: ['급여', '출장비', '부수입', '용돈', '이자', '환급', '기타'],
 };
+function openPeriodForm() {
+  if (day() !== 21) return toast('달력 월은 매월 1일~말일로 고정됩니다. 가계부 월을 선택해 주세요.');
+  editing = { id: null, type: 'period' };
+  const { start, end } = bounds(key());
+  $('dialogTitle').textContent = `${monthLabel(key())} · 가계부 기간 설정`;
+  $('fields').innerHTML = `<label>시작 날짜<input name="start" type="date" value="${start}" required></label>`
+    + `<label>종료 날짜 (포함)<input name="end" type="date" value="${end}" required></label>`
+    + `<p class="muted wide">21일이 토·일요일이면 직전 금요일이 기본 시작일입니다. 날짜를 직접 정하면 <b>이전 기간의 종료일과 다음 기간의 시작일도 자동으로 연결</b>되어 거래가 두 기간에 중복 집계되지 않아요. 고정지출 반복 날짜도 변경된 기간에 맞춥니다.</p>`
+    + `<button type="button" id="resetPeriod" class="wide">↻ 이 기간을 자동 기준으로 되돌리기</button>`;
+  $('formError').textContent = '';
+  $('dialog').showModal();
+}
+function openTransferForm(id = null, from = '') {
+  editing = { id, type: 'transfer' };
+  const k = key(), old = (data.budgetTransfers?.[k] || []).find(x => x.id === id);
+  const accounts = [...new Set([...budgetsFor(data, k).list.map(x => x.account),
+    ...monthStats(k).income.filter(t => t.account).map(t => t.account),
+    ...(data.budgetTransfers?.[k] || []).flatMap(t => [t.from, t.to])])];
+  $('dialogTitle').textContent = `${id ? '계좌 간 이체 수정' : '계좌 간 이체'} · ${monthLabel(k)}`;
+  $('fields').innerHTML = `<label>보내는 계좌<input name="from" value="${esc(old?.from || from)}" list="transferAccounts" required placeholder="예) 국민"></label>`
+    + `<label>받는 계좌<input name="to" value="${esc(old?.to || '')}" list="transferAccounts" required placeholder="예) 농협 · 온통대전"></label>`
+    + `<label class="wide">옮길 금액 (원)<input name="amount" type="number" min="1" step="1" required value="${old?.amount || ''}" placeholder="예) 200000"></label>`
+    + `<datalist id="transferAccounts">${accounts.map(a => `<option value="${esc(a)}">`).join('')}</datalist>`
+    + `<p class="muted wide">실제 송금이 아닌 가계부의 예산 이동 기록입니다. 받은 계좌는 예산을 따로 배정하지 않았어도 자동으로 표시돼요. 최초 배정 예산은 유지되고, 선택한 기간에만 반영됩니다.</p>`;
+  $('formError').textContent = '';
+  $('dialog').showModal();
+}
 function openDepositForm() {
   editing = { id: null, type: 'deposit' };
   const s = monthStats(key()), deposits = depositsFor(data, key()).map;
@@ -555,6 +611,8 @@ function openSideMoveForm() {
   $('dialog').showModal();
 }
 function openForm(id = null, type = tab, prefill = {}) {
+  if (type === 'period') return openPeriodForm();
+  if (type === 'transfer') return openTransferForm(id, prefill.from || '');
   if (type === 'side-move') return openSideMoveForm();
   if (type === 'deposit') return openDepositForm();
   if (type === 'note') return openNoteForm();
@@ -575,7 +633,7 @@ function openForm(id = null, type = tab, prefill = {}) {
   let fields = '';
   if (type === 'cards') fields = f('account', '계좌명', 'text', row.account || '', { required: true }) + f('amount', '배정 예산', 'number', row.amount ?? 0, { required: true });
   else {
-    fields = f('date', '날짜', 'date', row.date || (tx ? todayStr() : `${key()}-${pad(day())}`), { required: true })
+    fields = f('date', '날짜', 'date', row.date || (tx ? todayStr() : bounds(key()).start), { required: true })
       + f('category', '구분', 'text', row.category || '', { list: 'categories', required: !tx, ...opt })
       + f('detail', '세부 내역', 'text', row.detail || '', opt)
       + f('amount', tx ? '결제 금액' : '금액', 'number', id ? (row.amount ?? '') : (tx ? '' : 0), { required: !tx, ...opt });
@@ -596,6 +654,35 @@ $('form').onsubmit = e => {
   e.preventDefault();
   const { id, type } = editing, tx = type === 'transactions';
   const values = Object.fromEntries(new FormData(e.target));
+  if (type === 'period') {
+    const start = String(values.start || ''), end = String(values.end || ''), k = key(), nextKey = addMonths(k, 1);
+    if (!isDate(start) || !isDate(end) || end < start) return void ($('formError').textContent = '시작일과 종료일을 올바른 순서로 입력해 주세요.');
+    const proposed = { ...(data.periodStarts || {}), [k]: start, [nextKey]: addDays(end, 1) };
+    const keys = [addMonths(k, -1), k, nextKey, addMonths(k, 2)];
+    if (keys.some(q => { const b = periodRange(q, 21, proposed); return b.start > b.end; }))
+      return void ($('formError').textContent = '이웃 기간의 시작일보다 앞서거나 뒤로 겹칩니다. 앞·뒤 기간 날짜도 확인해 주세요.');
+    data.periodStarts = proposed;
+    save(); $('dialog').close(); render(); toast('선택한 기간을 변경했어요. 전체 집계와 고정지출 날짜에 적용됩니다.');
+    return;
+  }
+  if (type === 'transfer') {
+    const from = String(values.from || '').trim(), to = String(values.to || '').trim(), amount = Number(values.amount), k = key();
+    if (!from || !to || from === to) return void ($('formError').textContent = '서로 다른 보내는 계좌와 받는 계좌를 입력해 주세요.');
+    if (!Number.isSafeInteger(amount) || amount <= 0) return void ($('formError').textContent = '이체 금액은 1원 이상의 정수로 입력해 주세요.');
+    const entries = (data.budgetTransfers?.[k] || []).filter(t => t.id !== id);
+    const base = Number(budgetsFor(data, k).list.find(b => b.account === from)?.amount || 0);
+    const sideIn = sum(monthStats(k).income.filter(t => t.account === SIDE_ACCOUNT));
+    const available = base + sideShare(k, sideIn).of(from)
+      + entries.reduce((n, t) => n + (t.to === from ? t.amount : 0) - (t.from === from ? t.amount : 0), 0);
+    if (amount > available) return void ($('formError').textContent = `${from}에서 옮길 수 있는 예산은 ${won(Math.max(0, available))}입니다. (지출 전 기준)`);
+    const next = { id: id || uid(), from, to, amount };
+    const proposed = [...entries, next], negative = negativeTransferAccount(k, proposed);
+    if (negative) return void ($('formError').textContent = `${negative} 계좌의 다른 이체 내역 때문에 예산이 부족해집니다. 관련 이체를 먼저 조정해 주세요.`);
+    data.budgetTransfers ??= {};
+    data.budgetTransfers[k] = proposed;
+    save(); $('dialog').close(); render(); toast(`${from} → ${to} · ${won(amount)} 이체 예산을 반영했어요.`);
+    return;
+  }
   if (type === 'note') {
     const text = String(values.note || '').trim();
     data.notes ??= {};
@@ -629,6 +716,8 @@ $('form').onsubmit = e => {
   if (type === 'cards' && !values.account) return void ($('formError').textContent = '계좌명은 공백일 수 없습니다.');
   if (!tx && type !== 'cards' && !values.category) return void ($('formError').textContent = '구분은 공백일 수 없습니다.');
   if (values.amount != null && values.discount > values.amount) return void ($('formError').textContent = '할인 및 엔빵은 결제 금액을 초과할 수 없습니다.');
+  if (type === 'fixed' && (values.date < bounds(key()).start || values.date > bounds(key()).end))
+    return void ($('formError').textContent = `고정지출 날짜는 선택한 기간(${range(key())}) 안으로 설정해 주세요.`);
   if (type === 'cards') {
     const arr = ownBudgets();
     if (arr.some(b => b.account === values.account && b.id !== id)) return void ($('formError').textContent = '같은 계좌의 예산이 이미 있습니다.');
@@ -674,6 +763,14 @@ $('content').onclick = e => {
   if (b.dataset.action === 'show-na') { filter = NA_FILTER; render(); }
   if (b.dataset.action === 'deposit') openForm(null, 'deposit');
   if (b.dataset.action === 'side-move') openForm(null, 'side-move');
+  if (b.dataset.action === 'transfer-new') openTransferForm(null, b.dataset.from || '');
+  if (b.dataset.transferEdit) openTransferForm(b.dataset.transferEdit);
+  if (b.dataset.transferDelete && confirm('이 계좌 간 이체 기록을 삭제할까요?')) {
+    const proposed = (data.budgetTransfers?.[key()] || []).filter(t => t.id !== b.dataset.transferDelete);
+    const negative = negativeTransferAccount(key(), proposed);
+    if (negative) toast(`${negative} 계좌의 다른 이체 기록에 필요한 금액이 부족해요. 관련 이체를 먼저 수정해 주세요.`);
+    else { data.budgetTransfers[key()] = proposed; save(); render(); toast('계좌 간 이체 기록을 삭제했어요.'); }
+  }
   if (b.dataset.addBudget) openForm(null, 'cards', { account: b.dataset.addBudget });
   if (b.dataset.action === 'copy-budgets') {
     const from = laterBudgetMonth();
@@ -693,7 +790,19 @@ $('content').onchange = e => {
   if (field) { extra[field] = e.target.value; render(); $('content').querySelector(`[data-extra="${field}"]`)?.focus(); }
 };
 $('month').onchange = () => { if (!/^\d{4}-\d{2}$/.test(key())) $('month').value = nowKey(); extra.from = extra.to = ''; donutMonth = ''; render(); };
-$('basis').onchange = () => { data.cycleDay = day(); save(); render(); };
+$('basis').onchange = () => { data.cycleDay = day(); $('month').value = nowKey(); save(); render(); };
+$('editPeriod').onclick = () => openPeriodForm();
+$('fields').addEventListener('click', e => {
+  if (e.target.id !== 'resetPeriod' || !confirm('이 기간의 시작·종료를 기본 날짜로 되돌릴까요? 앞·뒤 기간 경계도 변경될 수 있습니다.')) return;
+  const next = addMonths(key(), 1);
+  const proposed = { ...(data.periodStarts || {}) };
+  delete proposed[key()]; delete proposed[next];
+  const keys = [addMonths(key(), -1), key(), next, addMonths(key(), 2)];
+  if (keys.some(k => { const b = periodRange(k, 21, proposed); return b.start > b.end; }))
+    return void ($('formError').textContent = '이웃 기간의 사용자 지정 날짜와 충돌합니다. 앞·뒤 기간을 먼저 조정해 주세요.');
+  data.periodStarts = proposed;
+  save(); $('dialog').close(); render(); toast('자동 날짜 기준으로 되돌렸어요.');
+});
 for (const [id, offset] of [['prev', -1], ['next', 1]]) $(id).onclick = () => {
   const [y, m] = key().split('-').map(Number), d = new Date(y, m - 1 + offset, 1);
   $('month').value = `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
@@ -703,7 +812,7 @@ for (const [id, offset] of [['prev', -1], ['next', 1]]) $(id).onclick = () => {
 };
 $('backup').onclick = () => {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }), url = URL.createObjectURL(blob), a = document.createElement('a');
-  a.href = url; a.download = `차곡-backup-${new Date().toISOString().slice(0, 10)}.json`; a.click(); URL.revokeObjectURL(url);
+  a.href = url; a.download = `차곡-backup-${todayStr()}.json`; a.click(); URL.revokeObjectURL(url);
   toast('백업을 다운로드했습니다.');
 };
 $('restore').onclick = () => $('file').click();
@@ -739,6 +848,27 @@ function validate(d) {
   if (d.notes == null) d.notes = {};
   if (typeof d.notes !== 'object' || Array.isArray(d.notes) || Object.entries(d.notes).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || typeof v !== 'string' || v.length > 3000)) throw Error('월별 메모 형식 오류');
   if (d.sideMoves != null && (typeof d.sideMoves !== 'object' || Array.isArray(d.sideMoves) || Object.entries(d.sideMoves).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || !v || typeof v !== 'object' || Array.isArray(v) || Object.values(v).some(n => !Number.isFinite(n) || n < 0)))) throw Error('부수입 옮기기 형식 오류');
+  if (d.periodStarts == null) d.periodStarts = {};
+  if (!d.periodStarts || typeof d.periodStarts !== 'object' || Array.isArray(d.periodStarts)
+    || Object.entries(d.periodStarts).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || !isDate(v))) throw Error('가계부 기간 설정 오류');
+  for (const k of Object.keys(d.periodStarts)) {
+    for (const m of [addMonths(k, -1), k, addMonths(k, 1)]) {
+      const { start, end } = periodRange(m, 21, d.periodStarts);
+      if (start > end) throw Error('가계부 기간이 겹치거나 역전되어 있습니다.');
+    }
+  }
+  if (d.budgetTransfers == null) d.budgetTransfers = {};
+  if (!d.budgetTransfers || typeof d.budgetTransfers !== 'object' || Array.isArray(d.budgetTransfers)) throw Error('계좌 이체 내역 오류');
+  for (const [k, rows] of Object.entries(d.budgetTransfers)) {
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || !Array.isArray(rows)) throw Error('계좌 이체 기간 오류');
+    const ids = new Set();
+    for (const t of rows) {
+      if (!t || typeof t.id !== 'string' || ids.has(t.id) || typeof t.from !== 'string' || !t.from.trim()
+        || typeof t.to !== 'string' || !t.to.trim() || t.from === t.to
+        || !Number.isSafeInteger(t.amount) || t.amount <= 0) throw Error('계좌 이체 금액 또는 계좌 형식 오류');
+      ids.add(t.id);
+    }
+  }
   if (d.fixedMonths == null) d.fixedMonths = {};
   if (typeof d.fixedMonths !== 'object' || Array.isArray(d.fixedMonths) || Object.entries(d.fixedMonths).some(([k, v]) => !/^\d{4}-(0[1-9]|1[0-2])$/.test(k) || typeof v !== 'boolean')) throw Error('고정지출 월 정보 오류');
   return d;
@@ -763,7 +893,7 @@ window.LedgerApp = {
   snapshot: () => JSON.parse(JSON.stringify(data)),
   replace: d => { data = validate(d); $('basis').value = data.cycleDay; render(); },
   // 엑셀 가져오기(importer.js)용
-  context: () => ({ key: key(), day: day() }),
+  context: () => ({ key: key(), day: day(), start: bounds(key()).start, end: bounds(key()).end }),
   existing: type => JSON.parse(JSON.stringify(data[type] || [])),
   importRows(type, rows) {
     const next = JSON.parse(JSON.stringify(data));
@@ -771,7 +901,7 @@ window.LedgerApp = {
     data = validate(next);   // 형식이 맞는지 한 번 더 확인한 뒤 반영
     save();
     render();
-    const months = [...new Set(rows.map(r => period(r.date, day())))].sort();
+    const months = [...new Set(rows.map(r => period(r.date, day(), data.periodStarts)))].sort();
     toast(`${rows.length}건을 가져왔어요${months.length ? ` (${months.map(monthLabel).join(', ')})` : ''}.`);
   },
 };

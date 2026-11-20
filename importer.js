@@ -179,7 +179,7 @@
   function open(type) {
     if (!FIELDS[type]) type = 'transactions';
     const d = dialog(), ctx = window.LedgerApp.context();
-    state = { type, rows: [], headerRow: -1, mapping: [], baseKey: ctx.key, defaultDate: `${ctx.key}-${pad(ctx.day)}`, skipDup: true, existing: [] };
+    state = { type, rows: [], headerRow: -1, mapping: [], baseKey: ctx.key, defaultDate: ctx.start, skipDup: true, existing: [] };
     workbook = null;
     d.querySelector('#importTitle').textContent = `엑셀 가져오기 · ${TITLES[type]}`;
     d.querySelector('#importPaste').value = '';
@@ -264,5 +264,5 @@
     load(rows, name);
   }
 
-  window.ChagogImport = { version: '2026.10.22-5', open, readFile, parseText, parseMoney, parseDate, detect, build };
+  window.ChagogImport = { version: '2026.11.20-1', open, readFile, parseText, parseMoney, parseDate, detect, build };
 })();
