@@ -69,7 +69,7 @@ function range(k) {
   return `${b.start.replaceAll('-', '.')} – ${b.end.replaceAll('-', '.')}`;
 }
 function panel(title, body, sub = '', action = '') { return `<section class="panel"><div class="panel-head"><div><h2>${title}</h2><p>${sub}</p></div>${action}</div>${body}</section>`; }
-function table(headers, rows) { return `<div class="table-wrap"><table><thead><tr>${headers.map(x => `<th>${x}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">아직 기록이 없어요. 첫 내역을 추가해 보세요.</td></tr>`}</tbody></table></div>`; }
+function table(headers, rows, className = '') { return `<div class="table-wrap"><table${className ? ` class="${className}"` : ''}><thead><tr>${headers.map(x => `<th>${x}</th>`).join('')}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">아직 기록이 없어요. 첫 내역을 추가해 보세요.</td></tr>`}</tbody></table></div>`; }
 function metric(label, v, sub, feature = false) { return `<article class="metric ${feature ? 'featured' : ''}"><label>${label}</label><strong>${money(v)}<em>원</em></strong><p>${sub}</p></article>`; }
 function aggregate() {
   const list = yearKeys().map(monthStats);
@@ -314,7 +314,7 @@ function renderList(s, nav) {
       + `<select data-extra="sort" aria-label="정렬">${Object.entries(SORTS).map(([k, [label]]) => `<option value="${k}" ${extra.sort === k ? 'selected' : ''}>${label}</option>`).join('')}</select>`
       + (extraActive() || filter || search ? `<button data-action="reset-filters">필터 초기화</button>` : '') + `</div>`;
   }
-  html += panel(nav[2] + ' 내역', filterBar + table(head, body),
+  html += panel(nav[2] + ' 내역', filterBar + table(head, body, 'ledger-table'),
     tab === 'fixed' ? `현재 조회 ${rows.length}건 · ${won(sum(rows))} · ↻ 표시는 지난달에서 자동 적용된 항목이에요.` : '* 원본 날짜가 없는 항목은 해당 시트 시작일로 배정했습니다.', `<button data-action="import-rows">📋 엑셀 가져오기</button>`);
   return html;
 }
