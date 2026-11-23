@@ -107,4 +107,54 @@ nav('transactions');
 assert.match(node('content').innerHTML,/50,000원/);
 assert.match(node('periodSummary').textContent,/2026\.10\.21 – 2026\.11\.19/);
 
-console.log('PASS: legacy restore, cards UI, transfer create/edit/delete/limit, period form, and selected range');
+// 수입 관리에서 '이월 / 온통대전'을 기록하면 해당 계좌의 부수입·이월에 표시되어야 한다.
+node('month').value='2026-11';
+nav('income');
+node('add').onclick();
+assert.match(node('fields').innerHTML,/급여 외 수입·이월은 해당 계좌 예산에 추가/);
+assert.match(node('fields').innerHTML,/<option value="이월">/);
+submit({date:'2026-11-20',category:'이월',detail:'온통대전 이월',amount:'10166',card:'온통대전',account:'온통대전'});
+assert.equal(snap().income.find(t=>t.category==='이월').account,'온통대전');
+nav('cards');
+let cardHtml=node('content').innerHTML;
+let onTongRow=cardHtml.match(/<tr><td><b>온통대전<\/b>[\s\S]*?<\/tr>/)?.[0];
+assert.ok(onTongRow,'입금 계좌가 예산 미배정이어도 자동으로 표시돼야 한다');
+assert.match(onTongRow,/<td class="income-cell">10,166원/);
+assert.match(onTongRow,/이월 10,166원/);
+assert.match(onTongRow,/10,166원<\/b>/);
+assert.match(cardHtml,/계좌별 부수입·이월 10,166원 제외/);
+nav('dashboard');
+assert.match(node('content').innerHTML,/온통대전/);
+assert.match(node('content').innerHTML,/10,166원/);
+
+// 다른 계좌의 급여·부수입과 기존 '기타에서 옮기기', 계좌 이체를 동시에 반영한다.
+const withIncome=snap();
+withIncome.income.push(
+  {id:'inc-salary',date:'2026-11-20',category:'급여',amount:200000,account:'농협'},
+  {id:'inc-side',date:'2026-11-20',category:'부수입',amount:5000,account:'온통대전'},
+  {id:'inc-other',date:'2026-11-20',category:'출장비',amount:12000,account:'기타'},
+  {id:'inc-refund',date:'2026-11-20',category:'환급',amount:4000,account:'농협'},
+  {id:'inc-unspecified',date:'2026-11-20',category:'용돈',amount:3000,account:''},
+);
+withIncome.sideMoves={'2026-11':{'온통대전':2000}};
+withIncome.budgetTransfers={'2026-11':[{id:'card-transfer',from:'국민',to:'온통대전',amount:58700}]};
+window.LedgerApp.replace(withIncome);
+nav('cards');
+cardHtml=node('content').innerHTML;
+onTongRow=cardHtml.match(/<tr><td><b>온통대전<\/b>[\s\S]*?<\/tr>/)?.[0];
+assert.match(onTongRow,/<td class="income-cell">17,166원/);
+assert.match(onTongRow,/이월 10,166원/);
+assert.match(onTongRow,/부수입 5,000원/);
+assert.match(onTongRow,/기타에서 옮김 2,000원/);
+assert.match(onTongRow,/\+58,700원/);
+assert.match(onTongRow,/75,866원/);
+const otherRow=cardHtml.match(/<tr><td><b>기타<\/b>[\s\S]*?<\/tr>/)?.[0];
+assert.match(otherRow,/<td class="income-cell">10,000원/);
+assert.match(cardHtml,/계좌별 부수입·이월 31,166원 제외/);
+assert.match(cardHtml,/>203,000<em>원<\/em>/); // 급여 200,000 + 계좌 미지정 용돈 3,000
+// 온통대전에서 다시 이체할 때도 직접 입금된 부수입이 가용 예산에 포함돼야 한다.
+click({action:'transfer-new',from:'온통대전'});
+submit({from:'온통대전',to:'농협',amount:'75000'});
+assert.equal(snap().budgetTransfers['2026-11'].length,2);
+
+console.log('PASS: legacy restore, cards UI, transfers, period settings, and account-specific carryover income');

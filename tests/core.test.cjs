@@ -29,6 +29,22 @@ const tx = [
   {date:'2026-10-21',category:'기타',amount:3000,account:'국민'},
 ];
 assert.deepEqual(L.budgetStats(tx,'국민',20000), {used:9000,carry:5000,remaining:6000});
+// 급여는 배분용 월수입이며, 이월·부수입 등은 입금 계좌의 예산으로 직접 들어간다.
+const budgetIncome = L.budgetIncome([
+  {category:'급여',account:'농협',amount:200000},
+  {category:'이월',account:'온통대전',amount:10166},
+  {category:'부수입',account:'온통대전',amount:5000},
+  {category:'환급',account:'농협',amount:4000},
+  {category:'출장비',account:'기타',amount:12000},
+  {category:'급여',account:'기타',amount:1000}, // 기존 기타 계좌 수입 호환
+  {category:'용돈',account:'',amount:3000}, // 계좌 미지정 수입은 배분용 유지
+]);
+assert.equal(budgetIncome.main,203000);
+assert.equal(budgetIncome.byAccount['온통대전'],15166);
+assert.equal(budgetIncome.byAccount['농협'],4000);
+assert.equal(budgetIncome.byAccount['기타'],13000);
+assert.equal(L.directIncomeAccount({category:'급여',account:'온통대전'}),null);
+assert.equal(L.directIncomeAccount({category:'이월',account:'온통대전'}),'온통대전');
 const data = { transactions:tx, fixed:[
   {id:'fixed-a',date:'2026-10-21',category:'적금',amount:50000},
   {id:'fixed-b',date:'2026-10-21',category:'모임',amount:10000},

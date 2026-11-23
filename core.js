@@ -97,11 +97,31 @@
     const a = rows.filter(t => t.account === account), used = sum(a.filter(t => !special(t))), carry = sum(a.filter(special));
     return { used, carry, remaining: amount - used - carry };
   }
+  /**
+   * 급여는 기존처럼 월간 예산을 배분할 때 사용하고, 급여 외 수입(이월 포함)은
+   * 수입 관리에서 지정한 계좌의 사용 가능 예산에 직접 반영한다.
+   * '기타' 계좌는 구버전 기록과의 호환을 위해 구분과 관계없이 직접 반영한다.
+   * 계좌가 비어 있는 수입은 임의 계좌로 배정하지 않고 일반 수입에 남겨 둔다.
+   */
+  function directIncomeAccount(t) {
+    const account = String(t.account || '').trim(), category = String(t.category || '').trim();
+    return account && (account === '기타' || (category && category !== '급여')) ? account : null;
+  }
+  function budgetIncome(rows) {
+    const byAccount = Object.create(null);
+    let main = 0;
+    for (const t of rows) {
+      const account = directIncomeAccount(t);
+      if (account) byAccount[account] = (byAccount[account] || 0) + net(t);
+      else main += net(t);
+    }
+    return { main, byAccount };
+  }
   /** 이체는 지출·수입이나 최초 배정 예산에 더하지 않고, 계좌 사이 가용액만 이동한다. */
   function transferNet(data, key, account) {
     return (data.budgetTransfers?.[key] || []).reduce((v, t) => v + (t.to === account ? t.amount : 0) - (t.from === account ? t.amount : 0), 0);
   }
-  const api = { version: '2026.11.20-1', net, period, periodRange, defaultStart, addMonths, addDays, isDate,
-    sum, special, stats, budgetStats, fixedFor, fixedSource, budgetsFor, depositsFor, shiftDate, transferNet };
+  const api = { version: '2026.11.23-1', net, period, periodRange, defaultStart, addMonths, addDays, isDate,
+    sum, special, stats, budgetStats, budgetIncome, directIncomeAccount, fixedFor, fixedSource, budgetsFor, depositsFor, shiftDate, transferNet };
   if (typeof module !== 'undefined') module.exports = api; else root.Ledger = api;
 })(typeof window !== 'undefined' ? window : globalThis);

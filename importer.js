@@ -264,5 +264,5 @@
     load(rows, name);
   }
 
-  window.ChagogImport = { version: '2026.11.20-1', open, readFile, parseText, parseMoney, parseDate, detect, build };
+  window.ChagogImport = { version: '2026.11.23-1', open, readFile, parseText, parseMoney, parseDate, detect, build };
 })();
