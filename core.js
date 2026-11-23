@@ -3,6 +3,52 @@
   const net = t => Number(t.amount || 0) - Number(t.discount || 0);
   const sum = (rows, fn = net) => rows.reduce((a, r) => a + fn(r), 0);
   const special = t => ['이월', '기타'].includes(t.category);
+  // '세부 지출 내역'에서 사용하는 월별 변동지출 예산. 기존 분류 예산(categoryBudgets)은
+  // 과거 백업 호환성을 위해 그대로 보관하고, 새 예산은 spendingBudgets에 따로 저장한다.
+  const SPENDING_DEFAULTS = Object.freeze({ 데이트: 200000, 교통: 200000, 생활비: 300000,
+    통신비: 50000, 운동: 150000, 회사: 250000, '그 외': 150000 });
+  const SPENDING_CATEGORIES = Object.keys(SPENDING_DEFAULTS);
+  function spendingCategory(t) {
+    const category = String(t.category || '').trim(), detail = String(t.detail || '').trim();
+    if (category === '데이터' || category === '데이트') return '데이트';
+    if (category === '교통') return '교통';
+    if (category === '통신' || category === '통신비') return '통신비';
+    if (category === '운동' || ((category === '생활' || category === '생활비')
+      && ['운동', '헬스', '필라테스', '요가', '수영'].some(word => detail.includes(word)))) return '운동';
+    if (category === '생활' || category === '생활비') return '생활비';
+    if (category === '회사') return '회사';
+    return '그 외';
+  }
+  // 이전 배포본에서 '데이터'로 저장된 사용자의 예산을 읽을 때만 '데이트'로 매핑한다.
+  // 실제 저장된 월별 예산과 거래 기록은 변경하지 않아 기존 백업을 보존한다.
+  function normalizeSpendingBudget(saved = {}) {
+    const map = { ...SPENDING_DEFAULTS, ...saved };
+    if (!Object.prototype.hasOwnProperty.call(saved, '데이트')
+      && Object.prototype.hasOwnProperty.call(saved, '데이터')) map.데이트 = saved.데이터;
+    delete map.데이터;
+    return map;
+  }
+  function spendingBudgetsFor(data, key) {
+    const all = data.spendingBudgets || {};
+    if (Object.prototype.hasOwnProperty.call(all, key))
+      return { map: normalizeSpendingBudget(all[key]), own: true, from: key };
+    let from = null;
+    for (const k of Object.keys(all)) if (k < key && (!from || k > from)) from = k;
+    return { map: normalizeSpendingBudget(from ? all[from] : {}), own: false, from };
+  }
+  function spendingReport(rows, budgets) {
+    const categories = SPENDING_CATEGORIES.map(category => {
+      const transactions = rows.filter(t => spendingCategory(t) === category);
+      const spent = sum(transactions), budget = Number(budgets[category] || 0);
+      const rate = budget ? spent / budget * 100 : spent ? Infinity : 0;
+      const status = !spent ? 'unused' : spent > budget ? 'over' : rate >= 80 ? 'warn' : 'ok';
+      return { category, transactions, count: transactions.length, spent, budget,
+        remaining: budget - spent, rate, status };
+    });
+    const budget = categories.reduce((n, c) => n + c.budget, 0), spent = sum(rows);
+    return { categories, budget, spent, remaining: budget - spent,
+      rate: budget ? spent / budget * 100 : spent ? Infinity : 0 };
+  }
   const monthIndex = key => { const [y, m] = key.split('-').map(Number); return y * 12 + m - 1; };
   function addMonths(key, offset) {
     const [y, m] = key.split('-').map(Number);
@@ -121,7 +167,7 @@
   function transferNet(data, key, account) {
     return (data.budgetTransfers?.[key] || []).reduce((v, t) => v + (t.to === account ? t.amount : 0) - (t.from === account ? t.amount : 0), 0);
   }
-  const api = { version: '2026.11.23-1', net, period, periodRange, defaultStart, addMonths, addDays, isDate,
+  const api = { version: '2026.11.23-3', SPENDING_DEFAULTS, SPENDING_CATEGORIES, spendingCategory, spendingBudgetsFor, spendingReport, net, period, periodRange, defaultStart, addMonths, addDays, isDate,
     sum, special, stats, budgetStats, budgetIncome, directIncomeAccount, fixedFor, fixedSource, budgetsFor, depositsFor, shiftDate, transferNet };
   if (typeof module !== 'undefined') module.exports = api; else root.Ledger = api;
 })(typeof window !== 'undefined' ? window : globalThis);

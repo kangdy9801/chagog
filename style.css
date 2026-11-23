@@ -91,3 +91,111 @@ footer{font-size:12px}
 .ledger-table .na,.detail-table .na,
 .ledger-table .muted,.detail-table .muted,
 .ledger-table td button{font-size:14pt}
+
+/* 세부 지출 내역: 요약형 예산 비교 + 필요할 때만 펼치는 사용 내역 */
+.spending-overview .panel-head,.spending-breakdown .panel-head{align-items:center;gap:14px}
+.spending-overview .panel-head>button{white-space:nowrap}
+.spending-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:8px 0 22px}
+.spending-metrics>div{min-width:0;background:#f5f8f4;border:1px solid #e6eee6;border-radius:13px;padding:17px 16px}
+.spending-metrics>div:first-child{background:#e8f1e8}
+.spending-metrics>div span{display:block;color:#64776d;font-size:13px;margin-bottom:6px}
+.spending-metrics>div strong{display:block;font-size:23px;line-height:1.4;letter-spacing:-.5px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.spending-metrics>div.negative{background:#fdf0e9;border-color:#f5dbce}
+.spending-metrics>div.negative strong{color:#b8664f}
+.spending-overall{margin:0 0 15px}
+.spending-overall>div:first-child{display:flex;justify-content:space-between;gap:12px;margin-bottom:8px;font-size:14px}
+.spending-overall b{font-variant-numeric:tabular-nums}
+.spending-track{display:block;height:10px;border-radius:99px;overflow:hidden;background:#e9eee8}
+.spending-track i{display:block;height:100%;background:#70a78b;border-radius:inherit;transition:width .2s}
+.spending-item.warn .spending-track i{background:#e2b35f}
+.spending-item.bad .spending-track i,.spending-overall .spending-track i.over{background:#dc947e}
+.spending-note,.spending-footnote{font-size:13px;color:#62756b;line-height:1.7;margin:0}
+.spending-note{padding:12px 14px;background:#f6f8f4;border-radius:9px}
+.spending-quick-actions{display:flex;flex-wrap:wrap;gap:7px}
+.spending-quick-actions button{font-size:13px;padding:8px 10px}
+.spending-filters{display:flex;flex-wrap:wrap;gap:12px;align-items:end;margin:16px 0 19px;padding:16px;background:#f6f8f4;border-radius:12px}
+.spending-filters label{display:flex;flex-direction:column;gap:5px;color:#62756b;font-size:13px;font-weight:600}
+.spending-filters select,.spending-filters input{min-height:38px;max-width:100%;background:#fff;border:1px solid #d9e5db;border-radius:8px;padding:7px 10px;color:#203a35}
+.spending-filters .spending-search{flex:1;min-width:160px}
+.spending-filters .spending-search input{width:100%}
+.spending-filters>button{min-height:38px;font-size:13px}
+.spending-list-header,.spending-item-summary{display:grid;grid-template-columns:minmax(155px,1.1fr) minmax(108px,.85fr) minmax(112px,.85fr) minmax(112px,.9fr) minmax(123px,1fr) 22px;column-gap:12px;align-items:center}
+.spending-list-header{padding:0 18px 10px;font-size:12px;font-weight:700;color:#81908b}
+.spending-list-header>span:not(:first-child){text-align:right}
+.spending-list-header>span:nth-child(5){text-align:left}
+.spending-list{display:flex;flex-direction:column;gap:10px}
+.spending-item{border:1px solid #e2e9e1;border-radius:13px;background:#fff;overflow:hidden}
+.spending-item[open]{border-color:#afccb9;box-shadow:0 5px 18px #203a3510}
+.spending-item-summary{cursor:pointer;list-style:none;min-height:85px;padding:12px 18px;transition:background .15s}
+.spending-item-summary::-webkit-details-marker{display:none}
+.spending-item-summary::marker{content:''}
+.spending-item-summary:hover{background:#f7faf6}
+.spending-item[open] .spending-item-summary{background:#f2f7f1;border-bottom:1px solid #e0eae0}
+.spending-item-summary:focus-visible{outline:2px solid #246b55;outline-offset:-3px}
+.spending-category{display:flex;align-items:center;gap:11px;min-width:0}
+.spending-bullet{width:11px;height:11px;flex:none;border-radius:50%}
+.spending-category b{font-size:16px;white-space:nowrap}
+.spending-category small{display:flex;align-items:center;gap:7px;margin-top:3px;font-size:12px;letter-spacing:0}
+.spending-status{display:inline-flex;border-radius:10px;font-weight:700;font-size:11px;padding:1px 7px;background:#eaf3ec;color:#38785d}
+.spending-status.bad{background:#fbe7dd;color:#af604a}
+.spending-status.warn{background:#fdf0d8;color:#946c25}
+.spending-status.neutral{background:#f0f2ee;color:#74827b}
+.spending-value{text-align:right;display:block;min-width:0;font-variant-numeric:tabular-nums}
+.spending-value small,.spending-usage small{display:none}
+.spending-value b{display:block;white-space:nowrap;font-size:14px}
+.spending-value.over b{color:#b8664f}
+.spending-usage{display:block;min-width:0}
+.spending-usage>span:first-child{display:block;text-align:right;font-size:14px;margin-bottom:7px}
+.spending-usage .spending-track{height:7px}
+.spending-chevron{text-align:right;color:#6c8276;font-size:24px;line-height:1;transition:transform .16s}
+.spending-item[open] .spending-chevron{transform:rotate(180deg)}
+.spending-detail-body{padding:20px 22px 22px}
+.spending-detail-top{display:flex;flex-wrap:wrap;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:13px}
+.spending-detail-top h3{margin:0;font-size:16px}
+.spending-detail-top h3 span{color:#7f9186;font-weight:500;font-size:13px}
+.spending-detail-top p{margin:3px 0 0;color:#7f9186;font-size:13px}
+.spending-detail-top button{font-size:13px;padding:7px 11px}
+.spending-chips{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 16px}
+.spending-chip{font-size:13px;color:#436958;padding:5px 10px;border-radius:20px;background:#eef5ed}
+.spending-chip b{margin-left:5px;font-variant-numeric:tabular-nums}
+.spending-transactions{min-width:680px;font-size:14px}
+.spending-transactions th{white-space:nowrap;font-size:13px}
+.spending-transactions td{vertical-align:middle;line-height:1.5}
+.spending-transactions td small{display:block;font-size:12px;color:#81908b;letter-spacing:0;margin-top:3px}
+.spending-transactions td button{font-size:13px}
+.spending-cell-amount{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.spending-empty{text-align:center;color:#81908b;font-size:14px;padding:30px 12px;margin:0}
+.spending-footnote{margin:14px 4px 0}
+@media(max-width:1180px){
+  .spending-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .spending-list-header{display:none}
+  .spending-item-summary{grid-template-columns:minmax(130px,1.15fr) repeat(3,minmax(100px,.8fr)) 22px;row-gap:12px}
+  .spending-usage{grid-column:1/-2;grid-row:2}
+  .spending-usage>span:first-child{display:flex;justify-content:space-between;gap:12px}
+  .spending-usage small{display:inline}
+  .spending-chevron{grid-column:-2/-1;grid-row:1}
+}
+@media(max-width:790px){
+  .spending-overview .panel-head,.spending-breakdown .panel-head{flex-wrap:wrap}
+  .spending-item-summary{grid-template-columns:repeat(3,minmax(0,1fr)) 22px;gap:12px;padding:17px}
+  .spending-category{grid-column:1/-2;grid-row:1}
+  .spending-chevron{grid-column:4;grid-row:1}
+  .spending-value{grid-row:2;text-align:left}
+  .spending-value small{display:block;letter-spacing:0;font-size:12px;color:#81908b;margin-bottom:4px}
+  .spending-value b{font-size:13px}
+  .spending-usage{grid-column:1/-1;grid-row:3}
+  .spending-detail-body{padding:16px}
+}
+@media(max-width:520px){
+  .spending-metrics{gap:8px;margin-bottom:18px}
+  .spending-metrics>div{padding:12px}
+  .spending-metrics>div span{font-size:12px}
+  .spending-metrics>div strong{font-size:18px}
+  .spending-filters{gap:9px;padding:12px}
+  .spending-filters label:not(.spending-search){flex:1;min-width:calc(50% - 8px)}
+  .spending-filters .spending-search{flex-basis:100%}
+  .spending-item-summary{gap:9px;padding:14px 12px}
+  .spending-value b{font-size:12px}
+  .spending-status{font-size:11px}
+  .spending-note{font-size:12px}
+}
